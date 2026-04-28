@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExecuteResult(BaseModel):
@@ -34,12 +34,45 @@ class CompileResult(BaseModel):
     sql_valid: bool = True
 
 
+class SessionInfo(BaseModel):
+    """Subset of POST /v1/sessions response the runner needs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str
+
+
+class ModelLoadResult(BaseModel):
+    """Subset of POST /v1/sessions/{id}/models response the runner needs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    model_id: str
+    data_objects: int = 0
+    dimensions: int = 0
+    measures: int = 0
+    metrics: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ObslClient(Protocol):
     """Minimal subset of the OBSL REST surface the runner depends on."""
 
     def health(self) -> dict[str, Any]: ...
 
     def settings(self) -> dict[str, Any]: ...
+
+    def create_session(self, *, metadata: dict[str, str] | None = None) -> SessionInfo: ...
+
+    def load_model(
+        self,
+        session_id: str,
+        *,
+        model_yaml: str,
+        extends: list[str] | None = None,
+    ) -> ModelLoadResult: ...
+
+    def close_session(self, session_id: str) -> None: ...
 
     def compile(
         self,
@@ -55,6 +88,7 @@ class ObslClient(Protocol):
         *,
         dialect: str = "postgres",
         model_id: str | None = None,
+        session_id: str | None = None,
     ) -> ExecuteResult: ...
 
 
@@ -104,6 +138,31 @@ class HttpObslClient:
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 
+    def create_session(self, *, metadata: dict[str, str] | None = None) -> SessionInfo:
+        r = self._client.post("/v1/sessions", json={"metadata": metadata or {}})
+        r.raise_for_status()
+        return SessionInfo.model_validate(r.json())
+
+    def load_model(
+        self,
+        session_id: str,
+        *,
+        model_yaml: str,
+        extends: list[str] | None = None,
+    ) -> ModelLoadResult:
+        body: dict[str, Any] = {"model_yaml": model_yaml}
+        if extends:
+            body["extends"] = extends
+        r = self._client.post(f"/v1/sessions/{session_id}/models", json=body)
+        r.raise_for_status()
+        return ModelLoadResult.model_validate(r.json())
+
+    def close_session(self, session_id: str) -> None:
+        r = self._client.delete(f"/v1/sessions/{session_id}")
+        # 204 on success, 404 if already gone — both are fine for cleanup.
+        if r.status_code not in (204, 404):
+            r.raise_for_status()
+
     def compile(
         self,
         query: dict[str, Any],
@@ -123,9 +182,16 @@ class HttpObslClient:
         *,
         dialect: str = "postgres",
         model_id: str | None = None,
+        session_id: str | None = None,
     ) -> ExecuteResult:
-        path = self._query_path("execute", model_id)
-        body = self._build_body(query, dialect, model_id)
+        if session_id is not None:
+            if model_id is None:
+                raise ValueError("model_id is required when session_id is set")
+            path = f"/v1/sessions/{session_id}/query/execute"
+            body: dict[str, Any] = {"model_id": model_id, "query": query, "dialect": dialect}
+        else:
+            path = self._query_path("execute", model_id)
+            body = self._build_body(query, dialect, model_id)
         r = self._client.post(path, json=body)
         r.raise_for_status()
         return ExecuteResult.model_validate(r.json())

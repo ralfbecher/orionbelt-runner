@@ -10,7 +10,7 @@ import structlog
 
 from orionbelt_runner.client import ExecuteResult, ObslClient
 from orionbelt_runner.report import render_markdown
-from orionbelt_runner.spec import RunSpec
+from orionbelt_runner.spec import ModelSpec, RunSpec
 
 log = structlog.get_logger("orionbelt_runner")
 
@@ -41,20 +41,35 @@ class Runner:
         started_at = datetime.now(tz=UTC)
         log.info("run_start", spec=spec.name, query_count=len(spec.queries))
 
+        session_id: str | None = None
+        model_id: str | None = spec.obsl.model_id
         results: dict[str, ExecuteResult] = {}
         errors: dict[str, str] = {}
-        for q in spec.queries:
-            try:
-                results[q.name] = self._client.execute(
-                    q.query,
-                    dialect=q.dialect,
-                    model_id=spec.obsl.model_id,
-                )
-                log.info("query_done", name=q.name, rows=len(results[q.name].rows))
-            except Exception as exc:  # noqa: BLE001 — surface anything the client raises
-                msg = f"{type(exc).__name__}: {exc}"
-                errors[q.name] = msg
-                log.error("query_failed", name=q.name, error=msg)
+
+        try:
+            if spec.obsl.model is not None:
+                session_id, model_id = self._load_session_model(spec.obsl.model)
+
+            for q in spec.queries:
+                try:
+                    results[q.name] = self._client.execute(
+                        q.query,
+                        dialect=q.dialect,
+                        model_id=model_id,
+                        session_id=session_id,
+                    )
+                    log.info("query_done", name=q.name, rows=len(results[q.name].rows))
+                except Exception as exc:  # noqa: BLE001 — surface anything the client raises
+                    msg = f"{type(exc).__name__}: {exc}"
+                    errors[q.name] = msg
+                    log.error("query_failed", name=q.name, error=msg)
+        finally:
+            if session_id is not None:
+                try:
+                    self._client.close_session(session_id)
+                    log.info("session_closed", session_id=session_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("session_close_failed", session_id=session_id, error=str(exc))
 
         finished_at = datetime.now(tz=UTC)
 
@@ -71,6 +86,24 @@ class Runner:
             report_path=report_path,
             errors=errors,
         )
+
+    def _load_session_model(self, model_spec: ModelSpec) -> tuple[str, str]:
+        session = self._client.create_session()
+        log.info("session_created", session_id=session.session_id)
+        yaml_text = model_spec.yaml_path.read_text(encoding="utf-8")
+        extends_yaml = [p.read_text(encoding="utf-8") for p in model_spec.extends]
+        loaded = self._client.load_model(
+            session.session_id,
+            model_yaml=yaml_text,
+            extends=extends_yaml or None,
+        )
+        log.info(
+            "model_loaded",
+            session_id=session.session_id,
+            model_id=loaded.model_id,
+            data_objects=loaded.data_objects,
+        )
+        return session.session_id, loaded.model_id
 
     def _render_report(
         self,

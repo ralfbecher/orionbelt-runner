@@ -16,6 +16,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from ruamel.yaml import YAML
 
 
+class ModelSpec(BaseModel):
+    """Model the runner loads into a fresh OBSL session at run start.
+
+    When set, the runner switches from single-model shortcut endpoints to a
+    session-scoped flow: create session → load model → run queries → delete
+    session. Paths resolve relative to the spec file's directory.
+    """
+
+    yaml_path: Path
+    extends: list[Path] = Field(default_factory=list)
+
+
 class ObslSpec(BaseModel):
     """OBSL endpoint configuration."""
 
@@ -23,6 +35,7 @@ class ObslSpec(BaseModel):
     model_id: str | None = None
     api_token: str | None = None
     timeout_seconds: float = 30.0
+    model: ModelSpec | None = None
 
 
 class QuerySpec(BaseModel):
@@ -70,9 +83,21 @@ class RunSpec(BaseModel):
 
 
 def load_spec(path: Path | str) -> RunSpec:
-    """Load and validate a YAML run spec from disk."""
+    """Load and validate a YAML run spec from disk.
+
+    Model paths in ``obsl.model`` are resolved relative to the spec file so
+    users can keep model YAML next to the run spec.
+    """
     yaml = YAML(typ="safe")
-    raw = yaml.load(Path(path).read_text(encoding="utf-8"))
+    spec_path = Path(path)
+    raw = yaml.load(spec_path.read_text(encoding="utf-8"))
     if raw is None:
         raise ValueError(f"Empty or invalid YAML at {path}")
-    return RunSpec.model_validate(raw)
+    spec = RunSpec.model_validate(raw)
+
+    if spec.obsl.model is not None:
+        base = spec_path.resolve().parent
+        spec.obsl.model.yaml_path = (base / spec.obsl.model.yaml_path).resolve()
+        spec.obsl.model.extends = [(base / p).resolve() for p in spec.obsl.model.extends]
+
+    return spec
