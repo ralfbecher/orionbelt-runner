@@ -94,6 +94,19 @@ report:
 
 **Path placeholders** in `report.output`, `report.title`, `report.intro`: `{name}`, `{date}`, `{datetime}`.
 
+### Queries from a folder
+
+For larger query libraries, point at a directory instead of (or in addition to) inline `queries:`:
+
+```yaml
+queries_dir: ./queries        # recursive *.yaml + *.yml, alpha-sorted
+queries:                      # optional, runs after dir queries in spec order
+  - name: ad_hoc
+    query: { ... }
+```
+
+Each file is a full `QuerySpec` (`name`, `dialect`, `query`, optional `description`). When `name:` is omitted the filename stem is used verbatim — `total-revenue.yaml` → `total-revenue`. Duplicate names across the dir + inline list raise an error at load time. Paths resolve relative to the spec file.
+
 ## Architecture
 
 The runner talks to OBSL through a small `ObslClient` Protocol. One implementation today (HTTP). Tests can drop in a fake; an in-process implementation can be added later without touching the runner, report, or CLI code.

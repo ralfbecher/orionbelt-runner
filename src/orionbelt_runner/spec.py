@@ -79,22 +79,31 @@ class ReportSpec(BaseModel):
 
 
 class RunSpec(BaseModel):
-    """Top-level run definition."""
+    """Top-level run definition.
+
+    Queries can be declared inline under ``queries:`` and/or loaded from a
+    folder via ``queries_dir:``. When both are set, dir queries (alpha-sorted
+    by relative path) run first, then inline queries in spec order. ``load_spec``
+    enforces that at least one query exists overall and that names are unique.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str | None = None
     obsl: ObslSpec = Field(default_factory=ObslSpec)
-    queries: list[QuerySpec]
+    queries_dir: Path | None = None
+    queries: list[QuerySpec] = Field(default_factory=list)
     report: ReportSpec
 
 
 def load_spec(path: Path | str) -> RunSpec:
     """Load and validate a YAML run spec from disk.
 
-    Model paths in ``obsl.model`` are resolved relative to the spec file so
-    users can keep model YAML next to the run spec.
+    Paths in ``obsl.model`` and ``queries_dir`` resolve relative to the spec
+    file so users can keep model + query YAML next to the run spec. Queries
+    found under ``queries_dir`` are prepended to ``spec.queries`` (dir-first,
+    inline-after); duplicate names raise.
     """
     yaml = YAML(typ="safe")
     spec_path = Path(path)
@@ -102,10 +111,53 @@ def load_spec(path: Path | str) -> RunSpec:
     if raw is None:
         raise ValueError(f"Empty or invalid YAML at {path}")
     spec = RunSpec.model_validate(raw)
+    base = spec_path.resolve().parent
 
     if spec.obsl.model is not None:
-        base = spec_path.resolve().parent
         spec.obsl.model.yaml_path = (base / spec.obsl.model.yaml_path).resolve()
         spec.obsl.model.extends = [(base / p).resolve() for p in spec.obsl.model.extends]
 
+    if spec.queries_dir is not None:
+        queries_dir = (base / spec.queries_dir).resolve()
+        spec.queries = _load_queries_from_dir(queries_dir) + spec.queries
+
+    if not spec.queries:
+        raise ValueError(
+            f"Spec at {path} defines no queries (queries: empty and queries_dir absent or empty)"
+        )
+
+    seen: set[str] = set()
+    for q in spec.queries:
+        if q.name in seen:
+            raise ValueError(f"Duplicate query name in spec: {q.name!r}")
+        seen.add(q.name)
+
     return spec
+
+
+def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
+    """Recursively load *.yaml / *.yml from ``dir_path`` as QuerySpec objects.
+
+    Files are sorted alpha by their path relative to ``dir_path``. A missing
+    ``name:`` defaults to the filename stem (wysiwyg — no normalization).
+    Empty files are skipped silently.
+    """
+    if not dir_path.is_dir():
+        raise ValueError(f"queries_dir is not a directory: {dir_path}")
+
+    yaml = YAML(typ="safe")
+    files = sorted(
+        [*dir_path.rglob("*.yaml"), *dir_path.rglob("*.yml")],
+        key=lambda p: p.relative_to(dir_path).as_posix(),
+    )
+    out: list[QuerySpec] = []
+    for f in files:
+        raw = yaml.load(f.read_text(encoding="utf-8"))
+        if raw is None:
+            continue
+        if not isinstance(raw, dict):
+            raise ValueError(f"Query file must be a YAML mapping: {f}")
+        if "name" not in raw:
+            raw["name"] = f.stem
+        out.append(QuerySpec.model_validate(raw))
+    return out

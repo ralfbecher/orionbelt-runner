@@ -51,3 +51,95 @@ def test_section_query_is_a_name_reference() -> None:
         }
     )
     assert spec.report.sections[0].query == "q1"
+
+
+# ---- queries_dir loading ---------------------------------------------------
+
+
+def _write_spec(tmp_path: Path, body: str) -> Path:
+    spec_path = tmp_path / "spec.yaml"
+    spec_path.write_text(body, encoding="utf-8")
+    return spec_path
+
+
+def _write_query(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+_BASE_SPEC = """\
+name: Multi
+queries_dir: ./queries
+report:
+  format: markdown
+  output: out.md
+  title: T
+"""
+
+
+def test_queries_dir_loads_files_and_uses_filename_stem(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "headline.yaml",
+        "dialect: postgres\nquery: { select: { measures: [Total] } }\n",
+    )
+    spec = load_spec(spec_path)
+    assert [q.name for q in spec.queries] == ["headline"]
+    assert spec.queries[0].dialect == "postgres"
+
+
+def test_queries_dir_recursive_alpha_sorted(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(tmp_path / "queries" / "b.yaml", "query: {}\n")
+    _write_query(tmp_path / "queries" / "a.yml", "query: {}\n")
+    _write_query(tmp_path / "queries" / "sub" / "c.yaml", "query: {}\n")
+    spec = load_spec(spec_path)
+    # Alpha sort by relative path: "a.yml", "b.yaml", "sub/c.yaml"
+    assert [q.name for q in spec.queries] == ["a", "b", "c"]
+
+
+def test_queries_dir_explicit_name_overrides_filename(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "file-stem.yaml",
+        "name: explicit_name\nquery: {}\n",
+    )
+    spec = load_spec(spec_path)
+    assert [q.name for q in spec.queries] == ["explicit_name"]
+
+
+def test_queries_dir_dir_first_inline_after(tmp_path: Path) -> None:
+    spec_path = _write_spec(
+        tmp_path,
+        _BASE_SPEC + "queries:\n  - { name: inline_one, query: {} }\n",
+    )
+    _write_query(tmp_path / "queries" / "from_dir.yaml", "query: {}\n")
+    spec = load_spec(spec_path)
+    assert [q.name for q in spec.queries] == ["from_dir", "inline_one"]
+
+
+def test_queries_dir_duplicate_names_raise(tmp_path: Path) -> None:
+    spec_path = _write_spec(
+        tmp_path,
+        _BASE_SPEC + "queries:\n  - { name: dup, query: {} }\n",
+    )
+    _write_query(tmp_path / "queries" / "dup.yaml", "query: {}\n")
+    with pytest.raises(ValueError, match="Duplicate query name"):
+        load_spec(spec_path)
+
+
+def test_spec_with_no_queries_at_all_raises(tmp_path: Path) -> None:
+    spec_path = _write_spec(
+        tmp_path,
+        "name: Empty\nreport:\n  format: markdown\n  output: o.md\n  title: T\n",
+    )
+    with pytest.raises(ValueError, match="defines no queries"):
+        load_spec(spec_path)
+
+
+def test_queries_dir_skips_empty_files(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(tmp_path / "queries" / "empty.yaml", "")
+    _write_query(tmp_path / "queries" / "real.yaml", "query: {}\n")
+    spec = load_spec(spec_path)
+    assert [q.name for q in spec.queries] == ["real"]
