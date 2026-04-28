@@ -11,18 +11,38 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ColumnMetadata(BaseModel):
+    """Per-column metadata returned by OBSL alongside rows."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    type: str = "string"  # "string" | "number" | "datetime" | "binary"
+    format: str | None = None
 
 
 class ExecuteResult(BaseModel):
     """Rows + metadata returned from POST /v1/query/execute (or shortcut)."""
 
+    model_config = ConfigDict(extra="ignore")
+
     sql: str
     dialect: str
-    columns: list[str] = Field(default_factory=list)
+    columns: list[ColumnMetadata] = Field(default_factory=list)
     rows: list[list[Any]] = Field(default_factory=list)
-    row_count: int | None = None
+    row_count: int = 0
     warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("columns", mode="before")
+    @classmethod
+    def _wrap_string_columns(cls, value: Any) -> Any:
+        # Tolerate legacy/test inputs that pass plain column-name strings.
+        if isinstance(value, list):
+            return [{"name": v} if isinstance(v, str) else v for v in value]
+        return value
 
 
 class CompileResult(BaseModel):
@@ -89,6 +109,9 @@ class ObslClient(Protocol):
         dialect: str = "postgres",
         model_id: str | None = None,
         session_id: str | None = None,
+        format_values: bool = True,
+        locale: str | None = None,
+        timezone: str | None = None,
     ) -> ExecuteResult: ...
 
 
@@ -183,6 +206,9 @@ class HttpObslClient:
         dialect: str = "postgres",
         model_id: str | None = None,
         session_id: str | None = None,
+        format_values: bool = True,
+        locale: str | None = None,
+        timezone: str | None = None,
     ) -> ExecuteResult:
         if session_id is not None:
             if model_id is None:
@@ -192,7 +218,12 @@ class HttpObslClient:
         else:
             path = self._query_path("execute", model_id)
             body = self._build_body(query, dialect, model_id)
-        r = self._client.post(path, json=body)
+        params: dict[str, str] = {"format_values": "true" if format_values else "false"}
+        if locale is not None:
+            params["locale"] = locale
+        if timezone is not None:
+            params["timezone"] = timezone
+        r = self._client.post(path, json=body, params=params)
         r.raise_for_status()
         return ExecuteResult.model_validate(r.json())
 

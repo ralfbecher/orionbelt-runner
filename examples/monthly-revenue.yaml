@@ -13,6 +13,8 @@ description: >
 obsl:
   base_url: http://localhost:8080
   # model_id: omitted — single-model mode
+  locale: de              # render numbers/dates German-style (1.234,56)
+  # timezone: Europe/Berlin   # uncomment to override the model default
 
 queries:
   - name: total_revenue

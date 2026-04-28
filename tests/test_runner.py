@@ -73,9 +73,20 @@ class FakeObslClient:
         dialect: str = "postgres",
         model_id: str | None = None,
         session_id: str | None = None,
+        format_values: bool = True,
+        locale: str | None = None,
+        timezone: str | None = None,
     ) -> ExecuteResult:
         self.calls.append(
-            {"query": query, "dialect": dialect, "model_id": model_id, "session_id": session_id}
+            {
+                "query": query,
+                "dialect": dialect,
+                "model_id": model_id,
+                "session_id": session_id,
+                "format_values": format_values,
+                "locale": locale,
+                "timezone": timezone,
+            }
         )
         # Pick whichever canned result the test threaded through via the
         # query's ``__test_name`` marker (test-only convention).
@@ -147,14 +158,11 @@ def test_runner_records_per_query_errors(tmp_path: Path) -> None:
         def execute(
             self,
             query: dict[str, Any],
-            *,
-            dialect: str = "postgres",
-            model_id: str | None = None,
-            session_id: str | None = None,
+            **kwargs: Any,
         ) -> ExecuteResult:
             if query.get("__test_name") == "by_country":
                 raise RuntimeError("boom")
-            return super().execute(query, dialect=dialect, model_id=model_id, session_id=session_id)
+            return super().execute(query, **kwargs)
 
     flaky = FlakyClient(
         {

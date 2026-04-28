@@ -49,15 +49,16 @@ def _render_section(section: ReportSection, result: ExecuteResult) -> str:
 def _render_table(result: ExecuteResult) -> str:
     if not result.columns:
         return "_No columns returned._"
+    names = [c.name for c in result.columns]
     if not result.rows:
-        return _table_header(result.columns) + "\n_No rows._"
+        return _table_header(names) + "\n_No rows._"
     rows = [_format_row(r) for r in result.rows]
-    return _table_header(result.columns) + "\n" + "\n".join(rows)
+    return _table_header(names) + "\n" + "\n".join(rows)
 
 
-def _table_header(columns: list[str]) -> str:
-    header = "| " + " | ".join(columns) + " |"
-    sep = "| " + " | ".join("---" for _ in columns) + " |"
+def _table_header(names: list[str]) -> str:
+    header = "| " + " | ".join(names) + " |"
+    sep = "| " + " | ".join("---" for _ in names) + " |"
     return f"{header}\n{sep}"
 
 
@@ -94,10 +95,19 @@ def _resolve_column_index(
 ) -> int | None:
     if isinstance(column, int):
         return column
-    if isinstance(column, str) and column in result.columns:
-        return result.columns.index(column)
-    if prefer_numeric and result.rows:
-        for i, cell in enumerate(result.rows[0]):
-            if isinstance(cell, (int, float)) and not isinstance(cell, bool):
+    if isinstance(column, str):
+        for i, c in enumerate(result.columns):
+            if c.name == column:
                 return i
+    if prefer_numeric:
+        # Prefer column.type when OBSL provides it (format_values=true makes
+        # cells strings, so runtime isinstance checks are unreliable). Fall
+        # back to runtime sniffing for legacy callers passing untyped columns.
+        for i, c in enumerate(result.columns):
+            if c.type == "number":
+                return i
+        if result.rows:
+            for i, cell in enumerate(result.rows[0]):
+                if isinstance(cell, (int, float)) and not isinstance(cell, bool):
+                    return i
     return None

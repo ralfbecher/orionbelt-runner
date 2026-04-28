@@ -29,13 +29,21 @@ class ModelSpec(BaseModel):
 
 
 class ObslSpec(BaseModel):
-    """OBSL endpoint configuration."""
+    """OBSL endpoint configuration.
+
+    ``locale`` and ``timezone`` are forwarded as query params on every
+    /query/execute call so OBSL renders numeric and timestamp cells with
+    locale-aware formatting (matching the Gradio UI). When omitted the
+    server falls back to ``DEFAULT_LOCALE`` and the model's default timezone.
+    """
 
     base_url: str = "http://localhost:8080"
     model_id: str | None = None
     api_token: str | None = None
     timeout_seconds: float = 30.0
     model: ModelSpec | None = None
+    locale: str | None = None  # BCP-47, e.g. "de", "en-US"
+    timezone: str | None = None  # IANA TZ, e.g. "Europe/Berlin"
 
 
 class QuerySpec(BaseModel):

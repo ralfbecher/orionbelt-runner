@@ -57,6 +57,9 @@ class Runner:
                         dialect=q.dialect,
                         model_id=model_id,
                         session_id=session_id,
+                        format_values=True,
+                        locale=spec.obsl.locale,
+                        timezone=spec.obsl.timezone,
                     )
                     log.info("query_done", name=q.name, rows=len(results[q.name].rows))
                 except Exception as exc:  # noqa: BLE001 — surface anything the client raises
