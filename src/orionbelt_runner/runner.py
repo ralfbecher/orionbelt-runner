@@ -143,6 +143,12 @@ class Runner:
                 # Unknown measures will fail at execute time with a clearer
                 # error — don't pile on a warning here.
                 continue
+            # Integer-typed measures (counts, distinct counts) don't need a
+            # format pattern — bare str(int) is already locale-neutral and
+            # matches user expectations. Only flag float / decimal measures.
+            rt = (m.result_type or m.data_type or "").lower()
+            if rt in {"int", "integer", "bigint", "smallint"}:
+                continue
             if not m.format:
                 missing_format.append(name)
 

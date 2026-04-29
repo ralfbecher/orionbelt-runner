@@ -443,6 +443,44 @@ def test_preflight_silent_when_format_present(tmp_path: Path) -> None:
     assert len(fake.measures_calls) == 1
 
 
+def test_preflight_skips_int_typed_measures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Integer measures (counts) don't need a format pattern — bare str(int)
+    is already locale-neutral, so they must not trigger the missing-format
+    warning even when ``format`` is None.
+    """
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000]],
+                row_count=1,
+            ),
+        },
+        measures=[
+            # Result-type int + no format → must NOT warn.
+            MeasureSummary(name="Total Revenue", format=None, result_type="int"),
+        ],
+    )
+    spec = _make_spec(tmp_path)
+    runner = Runner(_as_protocol(fake))
+    runner.run(spec)
+
+    out = capsys.readouterr()
+    log_text = out.out + out.err
+    assert "preflight_format_missing" not in log_text
+
+
 def test_preflight_skipped_when_no_measures_referenced(tmp_path: Path) -> None:
     """Spec with only raw-mode/dim-only queries doesn't probe measures."""
     fake = FakeObslClient(

@@ -83,6 +83,7 @@ class MeasureSummary(BaseModel):
     name: str
     format: str | None = None
     data_type: str | None = Field(default=None, alias="dataType")
+    result_type: str | None = Field(default=None, alias="result_type")
     description: str | None = None
 
 
