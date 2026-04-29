@@ -56,7 +56,7 @@ class Runner:
                 try:
                     results[q.name] = self._client.execute(
                         q.query,
-                        dialect=q.dialect,
+                        dialect=q.dialect or "postgres",
                         model_id=model_id,
                         session_id=session_id,
                         format_values=True,

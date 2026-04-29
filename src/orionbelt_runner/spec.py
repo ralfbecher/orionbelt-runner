@@ -47,11 +47,17 @@ class ObslSpec(BaseModel):
 
 
 class QuerySpec(BaseModel):
-    """A single named query — passed through to OBSL as-is."""
+    """A single named query — passed through to OBSL as-is.
+
+    ``dialect`` is left optional so the loader can distinguish "user did not
+    specify" (None) from an explicit per-query value. ``load_spec`` fills any
+    None entries with the spec-level default, so by the time the runner sees
+    a QuerySpec the field is always a string.
+    """
 
     name: str
     description: str | None = None
-    dialect: str = "postgres"
+    dialect: str | None = None
     query: dict[str, Any]
 
 
@@ -91,6 +97,7 @@ class RunSpec(BaseModel):
 
     name: str
     description: str | None = None
+    dialect: str = "postgres"
     obsl: ObslSpec = Field(default_factory=ObslSpec)
     queries_dir: Path | None = None
     queries: list[QuerySpec] = Field(default_factory=list)
@@ -126,6 +133,10 @@ def load_spec(path: Path | str) -> RunSpec:
             f"Spec at {path} defines no queries (queries: empty and queries_dir absent or empty)"
         )
 
+    for q in spec.queries:
+        if q.dialect is None:
+            q.dialect = spec.dialect
+
     seen: set[str] = set()
     for q in spec.queries:
         if q.name in seen:
@@ -138,9 +149,20 @@ def load_spec(path: Path | str) -> RunSpec:
 def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
     """Recursively load *.yaml / *.yml from ``dir_path`` as QuerySpec objects.
 
-    Files are sorted alpha by their path relative to ``dir_path``. A missing
-    ``name:`` defaults to the filename stem (wysiwyg — no normalization).
-    Empty files are skipped silently.
+    Files are sorted alpha by their path relative to ``dir_path``. Empty
+    files are skipped silently.
+
+    Two file shapes are accepted:
+
+    * **Wrapped** — a full QuerySpec with a top-level ``query:`` key (and
+      optionally ``name:``, ``description:``, ``dialect:``). Missing ``name``
+      defaults to the filename stem.
+    * **Bare body** — the OBML query body itself at the top level (``select:``,
+      ``where:``, etc.). The whole mapping is taken as the query body, the
+      filename stem becomes the name, and ``dialect`` defaults to ``postgres``.
+
+    Detection rule: presence of a top-level ``query:`` key → wrapped, else
+    → bare body. To customise name/dialect for a bare-body file, wrap it.
     """
     if not dir_path.is_dir():
         raise ValueError(f"queries_dir is not a directory: {dir_path}")
@@ -157,7 +179,10 @@ def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
             continue
         if not isinstance(raw, dict):
             raise ValueError(f"Query file must be a YAML mapping: {f}")
-        if "name" not in raw:
-            raw["name"] = f.stem
-        out.append(QuerySpec.model_validate(raw))
+        if "query" in raw:
+            if "name" not in raw:
+                raw["name"] = f.stem
+            out.append(QuerySpec.model_validate(raw))
+        else:
+            out.append(QuerySpec(name=f.stem, query=raw))
     return out

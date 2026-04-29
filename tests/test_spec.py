@@ -141,3 +141,62 @@ def test_queries_dir_skips_empty_files(tmp_path: Path) -> None:
     _write_query(tmp_path / "queries" / "real.yaml", "query: {}\n")
     spec = load_spec(spec_path)
     assert [q.name for q in spec.queries] == ["real"]
+
+
+def test_queries_dir_loads_bare_body_files(tmp_path: Path) -> None:
+    """A query file without a top-level `query:` is treated as the body itself."""
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "headline.yaml",
+        "select:\n  measures:\n    - Total\n",
+    )
+    spec = load_spec(spec_path)
+    assert [q.name for q in spec.queries] == ["headline"]
+    assert spec.queries[0].dialect == "postgres"
+    assert spec.queries[0].query == {"select": {"measures": ["Total"]}}
+
+
+def test_spec_level_dialect_fills_bare_body_queries(tmp_path: Path) -> None:
+    """Top-level `dialect:` propagates to bare-body queries that don't set their own."""
+    spec_path = _write_spec(
+        tmp_path,
+        "name: Multi\ndialect: snowflake\nqueries_dir: ./queries\n"
+        "report:\n  format: markdown\n  output: out.md\n  title: T\n",
+    )
+    _write_query(
+        tmp_path / "queries" / "headline.yaml",
+        "select:\n  measures:\n    - Total\n",
+    )
+    spec = load_spec(spec_path)
+    assert spec.queries[0].dialect == "snowflake"
+
+
+def test_spec_level_dialect_does_not_override_explicit(tmp_path: Path) -> None:
+    """A wrapped query with its own `dialect:` keeps its value over the spec default."""
+    spec_path = _write_spec(
+        tmp_path,
+        "name: Multi\ndialect: snowflake\nqueries_dir: ./queries\n"
+        "report:\n  format: markdown\n  output: out.md\n  title: T\n",
+    )
+    _write_query(
+        tmp_path / "queries" / "pg.yaml",
+        "dialect: postgres\nquery: { select: { measures: [Total] } }\n",
+    )
+    spec = load_spec(spec_path)
+    assert spec.queries[0].dialect == "postgres"
+
+
+def test_queries_dir_mixes_wrapped_and_bare(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "a_wrapped.yaml",
+        "dialect: postgres\nquery: { select: { measures: [Total] } }\n",
+    )
+    _write_query(
+        tmp_path / "queries" / "b_bare.yaml",
+        "select:\n  fields:\n    - X.Y\n",
+    )
+    spec = load_spec(spec_path)
+    names = [q.name for q in spec.queries]
+    assert names == ["a_wrapped", "b_bare"]
+    assert spec.queries[1].query == {"select": {"fields": ["X.Y"]}}
