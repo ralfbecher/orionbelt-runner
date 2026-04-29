@@ -1,20 +1,26 @@
-# Example run spec — runs three queries against an OBSL deployment in
-# single-model mode and emits a monthly-revenue markdown report.
+# Example run spec — loads a TPC-H semantic model into a fresh OBSL session
+# and emits a monthly-revenue markdown report.
 #
 # Usage:
 #   uv run orionbelt-runner run examples/monthly-revenue.yaml
+#
+# The runner posts ./tpch.obml.yml to /v1/sessions/{id}/models, runs the
+# queries, then tears the session down. The OBSL server must have a working
+# DB connection for the configured dialect (TPC-H tables: nation, region,
+# customer, orders, lineitem, …).
 
 name: Monthly Revenue
 description: >
-  Top-line numbers for the monthly business review. Assumes the OBSL server
-  is running in single-model mode (MODEL_FILE set) with QUERY_EXECUTE=true
-  and DB credentials configured.
+  Top-line numbers for the monthly business review. Loads its own TPC-H
+  model into the OBSL session — works against any OBSL deployment with
+  QUERY_EXECUTE=true and a connection serving the TPC-H tables.
 
 obsl:
   base_url: http://localhost:8080
-  # model_id: omitted — single-model mode
   locale: de              # render numbers/dates German-style (1.234,56)
   # timezone: Europe/Berlin   # uncomment to override the model default
+  model:
+    yaml_path: tpch.obml.yml   # resolved relative to this spec file
 
 queries:
   - name: total_revenue
@@ -23,32 +29,32 @@ queries:
     query:
       select:
         dimensions: []
-        measures: [Total Revenue]
+        measures: [Revenue]
 
-  - name: revenue_by_country
-    description: Top 20 countries by revenue
+  - name: revenue_by_nation
+    description: Top 20 nations by revenue
     dialect: postgres
     query:
       select:
-        dimensions: [Customer Country]
-        measures: [Total Revenue]
+        dimensions: [Nation]
+        measures: [Revenue]
       order_by:
-        - field: Total Revenue
+        - field: Revenue
           direction: desc
       limit: 20
 
-  - name: top_customers_raw
-    description: Top customer order rows (raw mode)
+  - name: top_orders_raw
+    description: Largest order rows (raw mode)
     dialect: postgres
     query:
       select:
         fields:
-          - Customers.Name
-          - Customers.Country
-          - Orders.Order ID
-          - Orders.Amount
+          - Customers.Customer Name
+          - Nations.Nation Name
+          - Orders.Order Key
+          - Orders.Order Total
       order_by:
-        - field: Orders.Amount
+        - field: Orders.Order Total
           direction: desc
       limit: 50
 
@@ -64,12 +70,12 @@ report:
       query: total_revenue
       render: value
 
-    - heading: Revenue by country
-      description: Top 20 countries by revenue.
-      query: revenue_by_country
+    - heading: Revenue by nation
+      description: Top 20 nations by revenue.
+      query: revenue_by_nation
       render: table
 
-    - heading: Top customer orders
+    - heading: Top orders
       description: Largest 50 individual orders.
-      query: top_customers_raw
+      query: top_orders_raw
       render: table
