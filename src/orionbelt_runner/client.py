@@ -91,7 +91,12 @@ class ObslClient(Protocol):
 
     def health(self) -> dict[str, Any]: ...
 
-    def settings(self) -> dict[str, Any]: ...
+    def settings(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> dict[str, Any]: ...
 
     def create_session(self, *, metadata: dict[str, str] | None = None) -> SessionInfo: ...
 
@@ -174,8 +179,18 @@ class HttpObslClient:
         self._raise_for_status(r)
         return r.json()  # type: ignore[no-any-return]
 
-    def settings(self) -> dict[str, Any]:
-        r = self._client.get("/v1/settings")
+    def settings(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {}
+        if session_id is not None:
+            params["session_id"] = session_id
+        if model_id is not None:
+            params["model_id"] = model_id
+        r = self._client.get("/v1/settings", params=params or None)
         self._raise_for_status(r)
         return r.json()  # type: ignore[no-any-return]
 

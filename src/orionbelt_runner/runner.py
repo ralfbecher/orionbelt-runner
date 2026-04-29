@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 
@@ -45,10 +46,16 @@ class Runner:
         model_id: str | None = spec.obsl.model_id
         results: dict[str, ExecuteResult] = {}
         errors: dict[str, str] = {}
+        report_basis: datetime = started_at
+        tz_name = "UTC"
 
         try:
             if spec.obsl.model is not None:
                 session_id, model_id = self._load_session_model(spec.obsl.model)
+
+            report_basis, tz_name = self._resolve_report_clock(
+                session_id=session_id, model_id=model_id, fallback=started_at
+            )
 
             self._preflight_format_patterns(spec.queries, session_id=session_id, model_id=model_id)
 
@@ -56,7 +63,7 @@ class Runner:
                 try:
                     results[q.name] = self._client.execute(
                         q.query,
-                        dialect=q.dialect,
+                        dialect=q.dialect or "postgres",
                         model_id=model_id,
                         session_id=session_id,
                         format_values=True,
@@ -80,7 +87,9 @@ class Runner:
 
         report_path: Path | None = None
         if results and not errors:
-            report_path = self._render_report(spec, results, started_at, output_dir)
+            report_path = self._render_report(
+                spec, results, report_basis, output_dir, tz_name=tz_name
+            )
             log.info("report_written", path=str(report_path))
 
         return RunResult(
@@ -166,17 +175,89 @@ class Runner:
         )
         return session.session_id, loaded.model_id
 
+    def _resolve_report_clock(
+        self,
+        *,
+        session_id: str | None,
+        model_id: str | None,
+        fallback: datetime,
+    ) -> tuple[datetime, str]:
+        """Ask OBSL for the report's timestamp basis and IANA TZ.
+
+        Calls ``GET /v1/settings`` and reads the ``timezone`` block:
+
+        * ``effective`` (or ``database``) → the IANA TZ to display in.
+        * ``utc`` (or ``now``) → the API server's current instant. We
+          prefer ``utc`` because it's unambiguous; ``now`` carries an
+          offset that we still parse correctly.
+
+        The server-side instant is the right report timestamp: a runner
+        on a different host or with clock drift would otherwise label its
+        own wall clock with the database's TZ, which is misleading.
+
+        Falls back to ``fallback`` (the runner's clock) and UTC on any
+        failure or when the response doesn't carry the relevant fields.
+        """
+        try:
+            payload = self._client.settings(session_id=session_id, model_id=model_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("settings_lookup_failed", error=f"{type(exc).__name__}: {exc}")
+            return fallback, "UTC"
+
+        tz_name = "UTC"
+        instant: datetime | None = None
+
+        tz_block = payload.get("timezone")
+        if isinstance(tz_block, dict):
+            for key in ("effective", "database"):
+                value = tz_block.get(key)
+                if isinstance(value, str) and value:
+                    tz_name = value
+                    break
+
+            for key in ("utc", "now"):
+                raw = tz_block.get(key)
+                if not isinstance(raw, str) or not raw:
+                    continue
+                try:
+                    # Python's fromisoformat accepts offsets like +02:00 in
+                    # 3.11+, but rejects the trailing "Z". Normalise first.
+                    instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    log.warning("settings_now_unparseable", field=key, value=raw)
+                    continue
+                if instant.tzinfo is None:
+                    instant = instant.replace(tzinfo=UTC)
+                break
+
+        return instant if instant is not None else fallback, tz_name
+
     def _render_report(
         self,
         spec: RunSpec,
         results: dict[str, ExecuteResult],
         started_at: datetime,
         output_dir: Path | None,
+        *,
+        tz_name: str = "UTC",
     ) -> Path:
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            log.warning("unknown_timezone", tz=tz_name, fallback="UTC")
+            tz_name = "UTC"
+            tz = ZoneInfo("UTC")
+        local_dt = started_at.astimezone(tz)
+        is_utc = tz_name.upper() == "UTC"
+        datetime_str = local_dt.strftime("%Y-%m-%dT%H-%M-%S") + ("Z" if is_utc else "")
         ctx = {
             "name": spec.name,
-            "date": started_at.strftime("%Y-%m-%d"),
-            "datetime": started_at.strftime("%Y-%m-%dT%H-%M-%SZ"),
+            "date": local_dt.strftime("%Y-%m-%d"),
+            "datetime": datetime_str,
+            "time": local_dt.strftime("%H:%M:%S"),
+            "time_filename": local_dt.strftime("%H_%M_%S"),
+            "tz": tz_name,
+            "tz_filename": tz_name.replace("/", ", "),
         }
         body = render_markdown(spec.report, results, context=ctx)
         out_path = Path(spec.report.output.format(**ctx))

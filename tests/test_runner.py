@@ -40,15 +40,27 @@ class FakeObslClient:
         self.model_loads: list[dict[str, Any]] = []
         self.closed_sessions: list[str] = []
         self.measures_calls: list[dict[str, Any]] = []
+        self.settings_calls: list[dict[str, Any]] = []
         self._session_counter = 0
         self.next_model_id = "model-loaded"
         self._measures = measures or []
+        # Tests can override this to simulate OBSL's resolved-TZ block.
+        self.timezone_block: dict[str, Any] | None = None
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "version": "2.1.0"}
 
-    def settings(self) -> dict[str, Any]:
-        return {"version": "2.1.0", "api_version": "v1"}
+    def settings(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.settings_calls.append({"session_id": session_id, "model_id": model_id})
+        payload: dict[str, Any] = {"version": "2.1.0", "api_version": "v1"}
+        if self.timezone_block is not None:
+            payload["timezone"] = self.timezone_block
+        return payload
 
     def create_session(self, *, metadata: dict[str, str] | None = None) -> SessionInfo:
         self._session_counter += 1
@@ -168,6 +180,97 @@ def test_runner_writes_report(tmp_path: Path) -> None:
     assert "| Country | Total Revenue |" in content
     assert "| DE | 5000 |" in content
     assert len(fake.calls) == 2
+
+
+def test_runner_resolves_timezone_from_settings(tmp_path: Path) -> None:
+    """OBSL's /v1/settings TZ is used to localize {time}/{date}/{tz}."""
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000]],
+                row_count=1,
+            ),
+        }
+    )
+    fake.timezone_block = {
+        "effective": "Europe/Berlin",
+        "database": None,
+        "utc": "2026-04-29T13:30:00Z",
+        "now": "2026-04-29T15:30:00+02:00",
+    }
+    spec = RunSpec(
+        name="TZ",
+        obsl=ObslSpec(base_url="http://unused"),
+        queries=[
+            QuerySpec(
+                name="headline",
+                query={"__test_name": "headline", "select": {"measures": ["Total Revenue"]}},
+            ),
+            QuerySpec(
+                name="by_country",
+                query={"__test_name": "by_country", "select": {"dimensions": ["Country"]}},
+            ),
+        ],
+        report=ReportSpec(
+            output=str(tmp_path / "report-{date}_{time_filename}_{tz_filename}.md"),
+            title="TZ — {date} {time} {tz}",
+            sections=[ReportSection(heading="Total", query="headline", render="value")],
+        ),
+    )
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+
+    assert result.succeeded
+    assert result.report_path is not None
+    # tz_filename replaces "/" with ", " so the path stays a single file.
+    assert "Europe, Berlin" in result.report_path.name
+    # The basis comes from the API server's `utc` (13:30Z), localised to
+    # Europe/Berlin (CEST = +02:00) → 15:30 in the title and 15_30_00 in
+    # the filename. Crucially this is NOT the runner's own clock.
+    assert "15_30_00" in result.report_path.name
+    body = result.report_path.read_text(encoding="utf-8")
+    first_line = body.splitlines()[0]
+    assert first_line == "# TZ — 2026-04-29 15:30:00 Europe/Berlin"
+
+
+def test_runner_falls_back_to_utc_when_settings_lacks_timezone(tmp_path: Path) -> None:
+    """No `timezone` block in /v1/settings → UTC, with the trailing Z preserved."""
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["X"],
+                rows=[[1]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["X"],
+                rows=[[1]],
+                row_count=1,
+            ),
+        }
+    )
+    fake.timezone_block = None
+    spec = _make_spec(tmp_path)
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+
+    assert result.succeeded
+    # _resolve_timezone is invoked (without a session here, it still runs).
+    assert fake.settings_calls, "expected /v1/settings to be probed"
 
 
 def test_runner_records_per_query_errors(tmp_path: Path) -> None:
