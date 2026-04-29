@@ -75,6 +75,17 @@ class ModelLoadResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class MeasureSummary(BaseModel):
+    """Subset of MeasureDetail the preflight check needs."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    name: str
+    format: str | None = None
+    data_type: str | None = Field(default=None, alias="dataType")
+    description: str | None = None
+
+
 class ObslClient(Protocol):
     """Minimal subset of the OBSL REST surface the runner depends on."""
 
@@ -93,6 +104,13 @@ class ObslClient(Protocol):
     ) -> ModelLoadResult: ...
 
     def close_session(self, session_id: str) -> None: ...
+
+    def list_measures(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[MeasureSummary]: ...
 
     def compile(
         self,
@@ -185,6 +203,22 @@ class HttpObslClient:
         # 204 on success, 404 if already gone — both are fine for cleanup.
         if r.status_code not in (204, 404):
             self._raise_for_status(r)
+
+    def list_measures(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[MeasureSummary]:
+        if session_id is not None and model_id is not None:
+            path = f"/v1/sessions/{session_id}/models/{model_id}/measures"
+        else:
+            # Single-model / auto-resolve mode.
+            path = "/v1/measures"
+        r = self._client.get(path)
+        self._raise_for_status(r)
+        data = r.json()
+        return [MeasureSummary.model_validate(m) for m in data]
 
     def compile(
         self,

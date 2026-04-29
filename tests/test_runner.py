@@ -9,6 +9,7 @@ import pytest
 
 from orionbelt_runner.client import (
     ExecuteResult,
+    MeasureSummary,
     ModelLoadResult,
     ObslClient,
     SessionInfo,
@@ -27,14 +28,21 @@ from orionbelt_runner.spec import (
 class FakeObslClient:
     """A canned-response client. The Protocol is the seam — no http needed."""
 
-    def __init__(self, results: dict[str, ExecuteResult]) -> None:
+    def __init__(
+        self,
+        results: dict[str, ExecuteResult],
+        *,
+        measures: list[MeasureSummary] | None = None,
+    ) -> None:
         self._results = results
         self.calls: list[dict[str, Any]] = []
         self.session_calls: list[str] = []
         self.model_loads: list[dict[str, Any]] = []
         self.closed_sessions: list[str] = []
+        self.measures_calls: list[dict[str, Any]] = []
         self._session_counter = 0
         self.next_model_id = "model-loaded"
+        self._measures = measures or []
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "version": "2.1.0"}
@@ -62,6 +70,15 @@ class FakeObslClient:
 
     def close_session(self, session_id: str) -> None:
         self.closed_sessions.append(session_id)
+
+    def list_measures(
+        self,
+        *,
+        session_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[MeasureSummary]:
+        self.measures_calls.append({"session_id": session_id, "model_id": model_id})
+        return list(self._measures)
 
     def compile(self, query: dict[str, Any], **kwargs: Any) -> Any:
         raise NotImplementedError  # not exercised here
@@ -245,6 +262,151 @@ def test_runner_closes_session_even_when_query_raises(tmp_path: Path) -> None:
 
     assert not result.succeeded
     assert fake.closed_sessions == ["sess-1"]  # cleanup ran despite failure
+
+
+def test_preflight_warns_when_referenced_measure_lacks_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measures referenced by the spec but missing a `format` pattern on
+    the OBSL side trigger a preflight warning before any query runs.
+
+    structlog renders directly to stdout/stderr (not via stdlib logging),
+    so the test reads the warning from ``capsys`` rather than ``caplog``.
+    """
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000]],
+                row_count=1,
+            ),
+        },
+        # OBSL returned Revenue with no format pattern → should warn.
+        measures=[
+            MeasureSummary(name="Total Revenue", format=None, dataType="decimal(18, 2)"),
+        ],
+    )
+    spec = _make_spec(tmp_path)
+    runner = Runner(_as_protocol(fake))
+    runner.run(spec)
+
+    # Preflight was called once; in single-model mode it passes (None, None).
+    assert len(fake.measures_calls) == 1
+
+    # structlog rendered the warning to stdout/stderr.
+    out = capsys.readouterr()
+    log_text = out.out + out.err
+    assert "preflight_format_missing" in log_text
+    assert "Total Revenue" in log_text
+
+
+def test_preflight_silent_when_format_present(tmp_path: Path) -> None:
+    """No warning when every referenced measure carries a format pattern."""
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000]],
+                row_count=1,
+            ),
+        },
+        measures=[
+            MeasureSummary(name="Total Revenue", format="#,##0.00"),
+        ],
+    )
+    spec = _make_spec(tmp_path)
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+    assert result.succeeded
+    # Preflight was called but produced no missing-format warnings.
+    assert len(fake.measures_calls) == 1
+
+
+def test_preflight_skipped_when_no_measures_referenced(tmp_path: Path) -> None:
+    """Spec with only raw-mode/dim-only queries doesn't probe measures."""
+    fake = FakeObslClient(
+        {
+            "raw": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Customers.Name"],
+                rows=[["Alice"]],
+                row_count=1,
+            )
+        }
+    )
+    spec = RunSpec(
+        name="RawOnly",
+        obsl=ObslSpec(base_url="http://unused"),
+        queries=[
+            QuerySpec(
+                name="raw",
+                query={"__test_name": "raw", "select": {"fields": ["Customers.Name"]}},
+            ),
+        ],
+        report=ReportSpec(
+            output=str(tmp_path / "r-{date}.md"),
+            title="T",
+            sections=[ReportSection(heading="H", query="raw", render="table")],
+        ),
+    )
+    runner = Runner(_as_protocol(fake))
+    runner.run(spec)
+    assert fake.measures_calls == []  # no measures referenced → no probe
+
+
+def test_preflight_failure_is_non_fatal(tmp_path: Path) -> None:
+    """If list_measures raises, the run continues."""
+
+    class BlowsUpListing(FakeObslClient):
+        def list_measures(
+            self,
+            *,
+            session_id: str | None = None,
+            model_id: str | None = None,
+        ) -> list[MeasureSummary]:
+            raise RuntimeError("transient")
+
+    fake = BlowsUpListing(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000]],
+                row_count=1,
+            ),
+        }
+    )
+    spec = _make_spec(tmp_path)
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+    assert result.succeeded  # preflight failure didn't abort the run
 
 
 def _as_protocol(c: FakeObslClient) -> ObslClient:
