@@ -95,12 +95,22 @@ class ReportSpec(BaseModel):
     The instant comes from OBSL's ``GET /v1/settings`` (``timezone.utc``)
     when the runner can reach a session-loaded model; falls back to the
     runner's own UTC clock otherwise.
+
+    ``footer`` (optional, rendered below the last section) accepts the
+    same placeholders plus result-derived counters — both snake_case and
+    camelCase forms are exposed:
+
+    * ``{number_of_queries}`` / ``{numberOfQueries}``     — queries that ran.
+    * ``{number_of_sections}`` / ``{numberOfSections}``   — sections rendered.
+    * ``{number_of_rows}`` / ``{numberOfRows}``           — sum of row_count
+      across all results.
     """
 
     format: Literal["markdown"] = "markdown"
     output: str
     title: str
     intro: str | None = None
+    footer: str | None = None
     sections: list[ReportSection] = Field(default_factory=list)
 
 

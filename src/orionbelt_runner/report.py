@@ -19,10 +19,22 @@ _ANCHORED_REGEX = re.compile(r"(?<!`)(\^[^\s`]+\$)(?!`)")
 def render_markdown(
     spec: ReportSpec,
     results: dict[str, ExecuteResult],
-    context: dict[str, str] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> str:
     """Render a complete markdown report for the given spec + results."""
-    ctx = context or {}
+    ctx: dict[str, Any] = dict(context or {})
+    # Result-derived counters available to title / intro / footer templates.
+    # Both snake_case and camelCase forms are exposed; pick whichever fits.
+    number_of_queries = len(results)
+    number_of_sections = len(spec.sections)
+    number_of_rows = sum(r.row_count for r in results.values())
+    ctx.setdefault("number_of_queries", number_of_queries)
+    ctx.setdefault("numberOfQueries", number_of_queries)
+    ctx.setdefault("number_of_sections", number_of_sections)
+    ctx.setdefault("numberOfSections", number_of_sections)
+    ctx.setdefault("number_of_rows", number_of_rows)
+    ctx.setdefault("numberOfRows", number_of_rows)
+
     parts: list[str] = []
 
     title = spec.title.format(**ctx)
@@ -35,6 +47,9 @@ def render_markdown(
             parts.append(f"## {section.heading}\n\n_Missing query result: `{section.query}`_\n")
             continue
         parts.append(_render_section(section, results[section.query]))
+
+    if spec.footer:
+        parts.append(spec.footer.format(**ctx))
 
     return "\n".join(parts).rstrip() + "\n"
 
