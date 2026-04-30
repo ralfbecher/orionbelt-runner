@@ -75,10 +75,30 @@ class ReportSection(BaseModel):
 
 
 class ReportSpec(BaseModel):
-    """Markdown report config. PDF / chart formats land later."""
+    """Markdown report config. PDF / chart formats land later.
+
+    ``output`` / ``title`` / ``intro`` all run through ``str.format`` against
+    the same placeholder set:
+
+    * ``{name}``           — spec name.
+    * ``{date}``           — ``YYYY-MM-DD`` in the resolved TZ.
+    * ``{time}``           — ``HH:MM:SS`` in the resolved TZ (colons are
+      filesystem-unsafe on Windows; use ``{time_filename}`` for paths).
+    * ``{time_filename}``  — ``HH_MM_SS`` (filesystem-safe).
+    * ``{datetime}``       — ``YYYY-MM-DDTHH-MM-SS`` plus ``Z`` only when
+      the TZ is UTC (filesystem-safe everywhere).
+    * ``{tz}``             — IANA name, e.g. ``Europe/Berlin``.
+    * ``{timezone}``       — same as ``{tz}`` but with ``/`` replaced by
+      ``, `` so the value is safe to drop into a path.
+    * ``{tz_filename}``    — alias of ``{timezone}`` (kept for back-compat).
+
+    The instant comes from OBSL's ``GET /v1/settings`` (``timezone.utc``)
+    when the runner can reach a session-loaded model; falls back to the
+    runner's own UTC clock otherwise.
+    """
 
     format: Literal["markdown"] = "markdown"
-    output: str  # supports {date}, {datetime}, {name} placeholders
+    output: str
     title: str
     intro: str | None = None
     sections: list[ReportSection] = Field(default_factory=list)
@@ -146,6 +166,34 @@ def load_spec(path: Path | str) -> RunSpec:
     return spec
 
 
+def _extract_leading_comment(text: str) -> str | None:
+    """Return the leading ``# …`` block of a YAML file as plain text.
+
+    Walks lines from the top, collecting comment bodies (with the leading
+    ``# `` stripped) and stopping at the first non-comment, non-blank line.
+    Blank lines inside the comment block are preserved so callers can split
+    a heading from a body. Returns ``None`` when there's no leading
+    comment.
+    """
+    collected: list[str] = []
+    started = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            content = stripped.lstrip("#").lstrip()
+            collected.append(content)
+            started = True
+        elif stripped == "":
+            if started:
+                collected.append("")
+            # else: skip leading blank lines
+        else:
+            break
+    while collected and not collected[-1]:
+        collected.pop()
+    return "\n".join(collected) if collected else None
+
+
 def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
     """Recursively load *.yaml / *.yml from ``dir_path`` as QuerySpec objects.
 
@@ -163,6 +211,11 @@ def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
 
     Detection rule: presence of a top-level ``query:`` key → wrapped, else
     → bare body. To customise name/dialect for a bare-body file, wrap it.
+
+    The file's leading ``# …`` comment block (if any) is captured as the
+    QuerySpec's ``description`` when no explicit ``description:`` is set
+    in the wrapped form. The runner uses this to derive auto-section
+    headings + descriptions when the spec doesn't list explicit sections.
     """
     if not dir_path.is_dir():
         raise ValueError(f"queries_dir is not a directory: {dir_path}")
@@ -174,15 +227,20 @@ def _load_queries_from_dir(dir_path: Path) -> list[QuerySpec]:
     )
     out: list[QuerySpec] = []
     for f in files:
-        raw = yaml.load(f.read_text(encoding="utf-8"))
+        text = f.read_text(encoding="utf-8")
+        raw = yaml.load(text)
         if raw is None:
             continue
         if not isinstance(raw, dict):
             raise ValueError(f"Query file must be a YAML mapping: {f}")
+        comment = _extract_leading_comment(text)
         if "query" in raw:
             if "name" not in raw:
                 raw["name"] = f.stem
-            out.append(QuerySpec.model_validate(raw))
+            spec = QuerySpec.model_validate(raw)
+            if spec.description is None and comment:
+                spec.description = comment
+            out.append(spec)
         else:
-            out.append(QuerySpec(name=f.stem, query=raw))
+            out.append(QuerySpec(name=f.stem, description=comment, query=raw))
     return out

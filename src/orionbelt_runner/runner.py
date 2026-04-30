@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 
 from orionbelt_runner.client import ExecuteResult, ObslClient
 from orionbelt_runner.report import render_markdown
-from orionbelt_runner.spec import ModelSpec, QuerySpec, RunSpec
+from orionbelt_runner.spec import ModelSpec, QuerySpec, ReportSection, RunSpec
 
 log = structlog.get_logger("orionbelt_runner")
 
@@ -256,6 +257,7 @@ class Runner:
         local_dt = started_at.astimezone(tz)
         is_utc = tz_name.upper() == "UTC"
         datetime_str = local_dt.strftime("%Y-%m-%dT%H-%M-%S") + ("Z" if is_utc else "")
+        tz_filename = tz_name.replace("/", ", ")
         ctx = {
             "name": spec.name,
             "date": local_dt.strftime("%Y-%m-%d"),
@@ -263,12 +265,76 @@ class Runner:
             "time": local_dt.strftime("%H:%M:%S"),
             "time_filename": local_dt.strftime("%H_%M_%S"),
             "tz": tz_name,
-            "tz_filename": tz_name.replace("/", ", "),
+            "tz_filename": tz_filename,
+            "timezone": tz_filename,  # alias of tz_filename — friendlier name
         }
-        body = render_markdown(spec.report, results, context=ctx)
+        report_spec = spec.report
+        if not report_spec.sections:
+            auto = _auto_sections(spec.queries)
+            if auto:
+                report_spec = report_spec.model_copy(update={"sections": auto})
+        body = render_markdown(report_spec, results, context=ctx)
         out_path = Path(spec.report.output.format(**ctx))
         if output_dir is not None and not out_path.is_absolute():
             out_path = output_dir / out_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(body, encoding="utf-8")
         return out_path
+
+
+def _auto_sections(queries: list[QuerySpec]) -> list[ReportSection]:
+    """Build one section per query when the spec didn't list any.
+
+    Heading and description come from the query's ``description`` field
+    (the leading ``# …`` block of the query file): the first non-empty
+    line becomes the heading, the rest the description. Falls back to
+    the query name when the file has no leading comment. Render mode is
+    inferred from the query body — measure-only queries become ``value``,
+    everything else stays ``table``.
+    """
+    sections: list[ReportSection] = []
+    for q in queries:
+        heading, description = _split_heading(q.description) if q.description else (q.name, None)
+        sections.append(
+            ReportSection(
+                heading=heading,
+                query=q.name,
+                description=description,
+                render=_auto_render_mode(q.query),
+            )
+        )
+    return sections
+
+
+def _split_heading(comment: str) -> tuple[str, str | None]:
+    """Take a multi-line comment block and split it into (heading, body)."""
+    lines = comment.splitlines()
+    heading = ""
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.strip():
+            heading = line.strip()
+            body_start = i + 1
+            break
+    while body_start < len(lines) and not lines[body_start].strip():
+        body_start += 1
+    body = "\n".join(lines[body_start:]).rstrip() or None
+    return heading or comment, body
+
+
+def _auto_render_mode(query: dict[str, Any]) -> str:
+    """Pick ``value`` for measure-only queries, ``table`` for everything else.
+
+    A measure-only query has ``measures`` set and exactly zero dimensions /
+    fields. That shape returns a single row with one numeric cell, which
+    reads better as a single bold number than a one-row table.
+    """
+    select = query.get("select") if isinstance(query, dict) else None
+    if not isinstance(select, dict):
+        return "table"
+    measures = select.get("measures") or []
+    dimensions = select.get("dimensions") or []
+    fields = select.get("fields") or []
+    if measures and not dimensions and not fields and len(measures) == 1:
+        return "value"
+    return "table"

@@ -232,7 +232,7 @@ def test_runner_resolves_timezone_from_settings(tmp_path: Path) -> None:
 
     assert result.succeeded
     assert result.report_path is not None
-    # tz_filename replaces "/" with ", " so the path stays a single file.
+    # tz_filename / timezone replace "/" with ", " so the path stays a single file.
     assert "Europe, Berlin" in result.report_path.name
     # The basis comes from the API server's `utc` (13:30Z), localised to
     # Europe/Berlin (CEST = +02:00) → 15:30 in the title and 15_30_00 in
@@ -241,6 +241,54 @@ def test_runner_resolves_timezone_from_settings(tmp_path: Path) -> None:
     body = result.report_path.read_text(encoding="utf-8")
     first_line = body.splitlines()[0]
     assert first_line == "# TZ — 2026-04-29 15:30:00 Europe/Berlin"
+
+
+def test_runner_friendly_timezone_placeholder(tmp_path: Path) -> None:
+    """``{timezone}`` works as a filesystem-safe alias of ``{tz_filename}``."""
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["X"],
+                rows=[[1]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["X"],
+                rows=[[1]],
+                row_count=1,
+            ),
+        }
+    )
+    fake.timezone_block = {"effective": "Europe/Berlin", "utc": "2026-04-29T13:30:00Z"}
+    spec = RunSpec(
+        name="TZ",
+        obsl=ObslSpec(base_url="http://unused"),
+        queries=[
+            QuerySpec(
+                name="headline",
+                query={"__test_name": "headline", "select": {"measures": ["X"]}},
+            ),
+            QuerySpec(
+                name="by_country",
+                query={"__test_name": "by_country", "select": {"dimensions": ["Y"]}},
+            ),
+        ],
+        report=ReportSpec(
+            output=str(tmp_path / "{name}-{date}-{time_filename}-{timezone}.md"),
+            title="{name} {date} {time} {timezone}",
+            sections=[ReportSection(heading="x", query="headline", render="value")],
+        ),
+    )
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+
+    assert result.report_path is not None
+    # `{timezone}` materialised as the filename-safe form.
+    assert result.report_path.name == "TZ-2026-04-29-15_30_00-Europe, Berlin.md"
 
 
 def test_runner_falls_back_to_utc_when_settings_lacks_timezone(tmp_path: Path) -> None:
@@ -271,6 +319,71 @@ def test_runner_falls_back_to_utc_when_settings_lacks_timezone(tmp_path: Path) -
     assert result.succeeded
     # _resolve_timezone is invoked (without a session here, it still runs).
     assert fake.settings_calls, "expected /v1/settings to be probed"
+
+
+def test_runner_auto_sections_when_report_has_none(tmp_path: Path) -> None:
+    """Empty report.sections + queries with descriptions → auto-generated sections.
+
+    Heading is the first comment line, description is the rest, render
+    mode is auto-picked: measure-only single-measure → ``value``, anything
+    else → ``table``.
+    """
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Total Revenue"],
+                rows=[[12345]],
+                row_count=1,
+            ),
+            "by_country": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["Country", "Total Revenue"],
+                rows=[["DE", 5000], ["US", 7345]],
+                row_count=2,
+            ),
+        }
+    )
+    spec = RunSpec(
+        name="Auto",
+        obsl=ObslSpec(base_url="http://unused"),
+        queries=[
+            QuerySpec(
+                name="headline",
+                description="Headline KPI\nTotal revenue across all regions.",
+                query={"__test_name": "headline", "select": {"measures": ["Total Revenue"]}},
+            ),
+            QuerySpec(
+                name="by_country",
+                description="Revenue by country",
+                query={
+                    "__test_name": "by_country",
+                    "select": {"dimensions": ["Country"], "measures": ["Total Revenue"]},
+                },
+            ),
+        ],
+        report=ReportSpec(
+            output=str(tmp_path / "report.md"),
+            title="Auto",
+            # No sections — runner generates them.
+        ),
+    )
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+
+    assert result.succeeded
+    body = result.report_path.read_text(encoding="utf-8") if result.report_path else ""
+    # Heading from comment first line; description from remainder.
+    assert "## Headline KPI" in body
+    assert "Total revenue across all regions." in body
+    # Single-measure query → value render → bold.
+    assert "**12345**" in body
+    # by_country has dims → table render.
+    assert "## Revenue by country" in body
+    assert "| Country | Total Revenue |" in body
+    assert "| DE | 5000 |" in body
 
 
 def test_runner_records_per_query_errors(tmp_path: Path) -> None:

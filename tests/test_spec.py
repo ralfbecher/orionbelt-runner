@@ -186,6 +186,30 @@ def test_spec_level_dialect_does_not_override_explicit(tmp_path: Path) -> None:
     assert spec.queries[0].dialect == "postgres"
 
 
+def test_queries_dir_captures_leading_comment_as_description(tmp_path: Path) -> None:
+    """The first ``# …`` block of a query file lands on QuerySpec.description."""
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "headline.yaml",
+        "# Headline KPI\n# Total revenue across all regions.\nselect:\n  measures:\n    - Total\n",
+    )
+    spec = load_spec(spec_path)
+    assert spec.queries[0].name == "headline"
+    assert spec.queries[0].description == "Headline KPI\nTotal revenue across all regions."
+
+
+def test_queries_dir_explicit_description_wins_over_comment(tmp_path: Path) -> None:
+    """A wrapped file's explicit ``description:`` is not overwritten by the comment."""
+    spec_path = _write_spec(tmp_path, _BASE_SPEC)
+    _write_query(
+        tmp_path / "queries" / "wrapped.yaml",
+        "# leading comment that should not win\n"
+        "description: explicit\nquery: { select: { measures: [Total] } }\n",
+    )
+    spec = load_spec(spec_path)
+    assert spec.queries[0].description == "explicit"
+
+
 def test_queries_dir_mixes_wrapped_and_bare(tmp_path: Path) -> None:
     spec_path = _write_spec(tmp_path, _BASE_SPEC)
     _write_query(
