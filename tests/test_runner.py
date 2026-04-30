@@ -386,6 +386,39 @@ def test_runner_auto_sections_when_report_has_none(tmp_path: Path) -> None:
     assert "| DE | 5000 |" in body
 
 
+def test_runner_quotes_anchored_regex_in_description(tmp_path: Path) -> None:
+    """A regex like ``^[A-Z]{2}$`` in a section description is wrapped in backticks."""
+    fake = FakeObslClient(
+        {
+            "headline": ExecuteResult(
+                sql="SELECT 1",
+                dialect="postgres",
+                columns=["X"],
+                rows=[[1]],
+                row_count=1,
+            ),
+        }
+    )
+    spec = RunSpec(
+        name="X",
+        obsl=ObslSpec(base_url="http://unused"),
+        queries=[
+            QuerySpec(
+                name="headline",
+                description="Country must match ^[A-Z]{2}$; otherwise invalid.",
+                query={"__test_name": "headline", "select": {"measures": ["X"]}},
+            ),
+        ],
+        report=ReportSpec(output=str(tmp_path / "r.md"), title="X"),
+    )
+    runner = Runner(_as_protocol(fake))
+    result = runner.run(spec)
+    assert result.report_path is not None
+    body = result.report_path.read_text(encoding="utf-8")
+    assert "`^[A-Z]{2}$`" in body
+    assert "match ^[A-Z]{2}$;" not in body
+
+
 def test_runner_records_per_query_errors(tmp_path: Path) -> None:
     class FlakyClient(FakeObslClient):
         def execute(

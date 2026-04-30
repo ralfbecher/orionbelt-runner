@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from orionbelt_runner.client import ExecuteResult
 from orionbelt_runner.spec import ReportSection, ReportSpec
+
+# Anchored regex spans (e.g. ``^[A-Z]{2}$``) inside a description trip
+# markdown's link / inline-code heuristics. Wrap any such span in
+# backticks so it renders as inline code instead of distorting the line.
+# Conservative: only matches `^…$` chunks with no whitespace and no
+# pre-existing backticks, so we never double-wrap.
+_ANCHORED_REGEX = re.compile(r"(?<!`)(\^[^\s`]+\$)(?!`)")
 
 
 def render_markdown(
@@ -32,9 +40,9 @@ def render_markdown(
 
 
 def _render_section(section: ReportSection, result: ExecuteResult) -> str:
-    lines = [f"## {section.heading}\n"]
+    lines = [f"## {_safe_description(section.heading)}\n"]
     if section.description:
-        lines.append(section.description + "\n")
+        lines.append(_safe_description(section.description) + "\n")
 
     if section.render == "table":
         lines.append(_render_table(result))
@@ -44,6 +52,11 @@ def _render_section(section: ReportSection, result: ExecuteResult) -> str:
         lines.append(_render_list(result, section.list_column))
 
     return "\n".join(lines) + "\n"
+
+
+def _safe_description(text: str) -> str:
+    """Wrap anchored-regex-looking spans in backticks for markdown safety."""
+    return _ANCHORED_REGEX.sub(r"`\1`", text)
 
 
 def _render_table(result: ExecuteResult) -> str:
