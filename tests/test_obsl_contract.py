@@ -7,6 +7,7 @@ failed before 0.8.1 on payloads that unit tests happily accepted.
 
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -20,7 +21,14 @@ from orionbelt_runner.cli import app
 from orionbelt_runner.client import HttpObslClient
 from orionbelt_runner.exports import to_arrow_table
 from orionbelt_runner.runner import Runner
-from orionbelt_runner.spec import ExportTarget, ObslSpec, QuerySpec, ReportSpec, RunSpec
+from orionbelt_runner.spec import (
+    ExportTarget,
+    ModelSpec,
+    ObslSpec,
+    QuerySpec,
+    ReportSpec,
+    RunSpec,
+)
 from tests.obsl_stub import EXPLAIN, StubObsl
 
 OBSL_CLONE = Path(__file__).resolve().parents[2] / "orionbelt-semantic-layer"
@@ -158,7 +166,12 @@ def test_run_survives_a_server_without_the_arrow_transport(
 def test_cli_runs_end_to_end_against_a_real_socket(
     tmp_path: Path, stub_server: tuple[str, StubObsl]
 ) -> None:
-    """The whole binary: preflight, session, query, report, export, run log."""
+    """The whole binary over a socket: preflight, query, report, export, run log.
+
+    No ``obsl.model``, so this is the *shortcut*-endpoint path
+    (``/v1/query/execute``). The session-scoped path is covered by
+    :func:`test_session_path_runs_the_full_lifecycle`.
+    """
     base_url, stub = stub_server
     spec_path = tmp_path / "spec.yaml"
     spec_path.write_text(
@@ -190,8 +203,50 @@ report:
     assert (tmp_path / "report.md").exists()
     table = pq.read_table(tmp_path / "out" / "revenue_by_nation.parquet")
     assert table.schema.field("Revenue").type == pa.decimal128(18, 2)
-    # Preflight really ran against the socket.
+    # Preflight really ran against the socket…
     assert any(r.url.path.startswith("/health") for r in stub.requests)
+    # …over the shortcut endpoints, with no session created.
+    paths = [r.url.path for r in stub.requests]
+    assert "/v1/query/execute" in paths
+    assert not any(p.startswith("/v1/sessions") for p in paths)
+
+
+def test_session_path_runs_the_full_lifecycle(
+    tmp_path: Path, stub_client: HttpObslClient, obsl_stub: StubObsl
+) -> None:
+    """With ``obsl.model`` set: create session → load model → query → delete.
+
+    The session endpoints take a different shape from the shortcuts (a wrapped
+    ``{model_id, query, dialect}`` body, dialect out of the query string), so
+    they need their own pass against the stub.
+    """
+    model_path = tmp_path / "model.obml.yml"
+    model_path.write_text("version: 1\ndataObjects: []\n", encoding="utf-8")
+    spec = _spec(
+        tmp_path,
+        "http://obsl.test",
+        exports=[ExportTarget(format="parquet", uri=str(tmp_path / "out"))],
+    )
+    spec.obsl.model = ModelSpec(yaml_path=model_path)
+
+    result = Runner(stub_client).run(spec)
+
+    assert result.fully_delivered, result.export_errors
+    methods = [(r.method, r.url.path) for r in obsl_stub.requests]
+    assert ("POST", "/v1/sessions") in methods
+    assert ("POST", "/v1/sessions/sess-1/models") in methods
+    assert ("POST", "/v1/sessions/sess-1/query/execute") in methods
+    # The session is always torn down, even though exports ran after it.
+    assert ("DELETE", "/v1/sessions/sess-1") in methods
+
+    # The session endpoint wraps the query body; the shortcut spreads it.
+    execute = next(r for r in obsl_stub.requests if r.url.path.endswith("/query/execute"))
+    assert json.loads(execute.content)["model_id"] == "model-1"
+    assert "dialect" not in execute.url.params
+
+    # And the Arrow transport works the same way through a session.
+    table = pq.read_table(tmp_path / "out" / "revenue_by_nation.parquet")
+    assert table.schema.field("Revenue").type == pa.decimal128(18, 2)
 
 
 # -- drift detection against a sibling OBSL checkout -----------------------
