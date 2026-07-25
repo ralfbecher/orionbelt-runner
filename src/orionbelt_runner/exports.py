@@ -177,19 +177,24 @@ def _as_decimals(pa: Any, array: Any, hint: str) -> Any | None:
     values, useless schema — so the ``decimal(p, s)`` hint is honoured here.
 
     Precision above 38 digits needs ``decimal256``. Returns ``None`` when the
-    hint is unparseable or a value won't fit, leaving the column as-is rather
-    than losing data to a narrow target.
+    hint is unparseable, out of Arrow's range, or a value won't fit, leaving
+    the column as-is rather than losing data to a narrow target.
+
+    Constructing the target type is inside the guard on purpose: Arrow caps
+    decimals at 76 digits and rejects a scale wider than the precision, and a
+    database whose DECIMAL range is wider (or a hint we misread) must degrade
+    this one column — not fail the whole export target.
     """
     match = _DECIMAL_HINT.match(hint)
     if match is None:
         return None
     precision, scale = int(match.group(1)), int(match.group(2) or 0)
-    if precision < 1:
-        return None
-    target = pa.decimal128(precision, scale) if precision <= 38 else pa.decimal256(precision, scale)
     try:
+        target = (
+            pa.decimal128(precision, scale) if precision <= 38 else pa.decimal256(precision, scale)
+        )
         return array.cast(target)
-    except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError):
+    except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError, ValueError):
         return None
 
 

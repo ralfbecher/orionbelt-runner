@@ -114,6 +114,51 @@ def test_build_arrow_table_keeps_values_when_a_decimal_wont_fit() -> None:
     assert table.column("Revenue").to_pylist() == ["999999999.99"]
 
 
+def test_build_arrow_table_at_arrows_decimal_ceiling() -> None:
+    """76 digits is the widest decimal256 Arrow accepts — it must still convert."""
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "Wide", "type": "decimal(76, 2)"}],
+        rows=[["1.50"]],
+        row_count=1,
+    )
+    table = build_arrow_table(result)
+    assert table.schema.field("Wide").type == pa.decimal256(76, 2)
+    assert table.column("Wide").to_pylist() == [Decimal("1.50")]
+
+
+@pytest.mark.parametrize(
+    ("hint", "why"),
+    [
+        ("decimal(80, 0)", "wider than Arrow's 76-digit ceiling"),
+        ("decimal(0, 0)", "precision below 1"),
+        ("decimal(4, 6)", "scale wider than precision"),
+    ],
+)
+def test_build_arrow_table_degrades_on_a_decimal_arrow_cannot_represent(
+    hint: str, why: str
+) -> None:
+    """Constructing the target type must not escape the guard.
+
+    ``pa.decimal256(80, 0)`` raises ``ValueError`` before any cast is tried; if
+    that escapes, one odd column takes down the entire export target instead of
+    degrading to the inferred type.
+    """
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "X", "type": hint}],
+        rows=[["1.5"]],
+        row_count=1,
+    )
+    table = build_arrow_table(result)
+    assert table.schema.field("X").type == pa.string(), why
+    assert table.column("X").to_pylist() == ["1.5"]
+    # And the file still renders — the target is not lost.
+    assert render_parquet(result)[:4] == b"PAR1"
+
+
 def test_to_arrow_table_passes_the_transport_table_through() -> None:
     """An ArrowResult from format=arrow must never be re-inferred."""
     table = pa.table({"Revenue": pa.array([Decimal("1.50")], pa.decimal128(12, 2))})
