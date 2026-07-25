@@ -35,6 +35,24 @@ src/orionbelt_runner/
 └── cli.py         # Typer CLI: orionbelt-runner run / version
 ```
 
+## Testing
+
+```
+tests/
+├── obsl_stub.py           # StubObsl — OBSL 2.23-shaped responses (the contract fixture)
+├── conftest.py            # obsl_stub / stub_client / stub_server fixtures
+├── test_obsl_contract.py  # the runner against those responses, end to end
+└── test_*.py              # unit tests, mostly against a hand-rolled ObslClient fake
+```
+
+**Anything about how OBSL answers belongs in `tests/obsl_stub.py`.** Every bug shipped in 0.8.0 was contract drift — the runner's models describing OBSL's responses slightly wrong, with hand-written fixtures encoding the same misunderstanding, so nothing failed until a real server answered. Pick the fixture that matches the layer:
+
+- `stub_client` — a real `HttpObslClient` on a mock transport. No sockets. Default choice; covers params, headers, content-type negotiation, parsing.
+- `stub_server` — the stub on a loopback port, for CLI-level runs.
+- `obsl_stub` — the payload object itself; set `arrow_transport=False`, `warnings=[…]`, `columns=[…]` per test, and read `.requests` to assert how the runner called it.
+
+When OBSL's contract changes, update `obsl_stub.py` **first** and let the failures show you what to fix. `test_stub_payloads_match_the_obsl_schemas` cross-checks the stub's field names (including pydantic aliases — OBSL sends `dataType` for `data_type`) against a sibling `../orionbelt-semantic-layer` checkout; it skips when the clone isn't there, so it guards a dev machine, not CI.
+
 ## Design rules
 
 - **The Protocol is the seam.** Anything the runner needs from OBSL goes through `ObslClient`. Tests use a fake; a future in-process client lives next to `HttpObslClient` without touching `runner.py` / `report.py` / `cli.py`.
