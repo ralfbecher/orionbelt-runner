@@ -1,0 +1,68 @@
+# Example run spec — export-only. Runs the same TPC-H queries as
+# monthly-revenue.yaml but renders no report: results land as Parquet in a
+# local folder and in an S3 bucket, for a warehouse / lakehouse to pick up.
+#
+# Usage:
+#   uv sync --extra arrow
+#   uv run orionbelt-runner run examples/revenue-export-only.yaml
+#
+# S3 credentials come from the standard AWS chain (AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, or an instance / task role) —
+# never from this file, so it stays safe to commit.
+
+name: Revenue Extract
+description: >
+  Export-only run — no report, just typed Parquet for downstream tooling.
+
+obsl:
+  base_url: http://localhost:8080
+  timezone: Europe/Berlin
+  model:
+    yaml_path: tpch.obml.yml   # resolved relative to this spec file
+
+# Skip report rendering. The `report:` block below is optional in this mode —
+# it's kept only so the run-log sidecar lands in reports/ next to the other
+# runs; drop it entirely and the log goes to {name}-{datetime}.run.yaml.
+no_report: true
+
+queries:
+  - name: revenue_by_nation
+    description: Revenue per nation
+    query:
+      select:
+        dimensions: [Nation]
+        measures: [Revenue]
+      orderBy:
+        - field: Revenue
+          direction: desc
+
+  - name: top_orders_raw
+    description: Largest order rows (raw mode)
+    query:
+      select:
+        fields:
+          - Customers.Customer Name
+          - Nations.Nation Name
+          - Orders.Order Key
+          - Orders.Order Total
+      orderBy:
+        - field: Orders.Order Total
+          direction: desc
+      limit: 1000
+
+exports:
+  # One Parquet file per query, partitioned by run date.
+  - format: parquet
+    uri: exports/{name}/{date}/
+    compression: zstd
+
+  # Same rows to object storage. Works with MinIO / R2 / Ceph too — add
+  # `endpoint_override: http://localhost:9000` (or set AWS_ENDPOINT_URL).
+  - format: parquet
+    uri: s3://analytics-landing/orionbelt/{name}/{date}/
+    compression: zstd
+    region: eu-central-1
+
+report:
+  output: reports/revenue-extract-{date}.md
+  title: "Revenue Extract — {date}"

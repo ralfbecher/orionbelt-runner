@@ -27,18 +27,20 @@ A run is a YAML document combining:
 - An **OBSL endpoint** (base URL, optional auth, optional locale/timezone, optional model to load)
 - A list of **named queries** — any valid OBML query body
 - A **report config** — markdown, HTML, or PDF output with sections bound to queries
+- Optional **data exports** — Parquet / Arrow / TSV to a folder or an S3 bucket (report optional: set `no_report: true` for an export-only run)
 
 Numeric and timestamp cells are pre-rendered server-side using each column's `format` pattern from the OBML model (the runner sends `format_values=true` on every query), so reports show e.g. `1.853.429,67` for `locale: de` without any client-side formatting. See [`examples/monthly-revenue-2026-04-29.md`](examples/monthly-revenue-2026-04-29.md) (markdown), [`examples/monthly-revenue-2026-04-29.html`](examples/monthly-revenue-2026-04-29.html) (HTML), and [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) (PDF) for sample outputs.
 
 ## Status
 
-Early scaffold (v0.7.0). Markdown, HTML, and PDF reports, with optional per-query TSV exports and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
+Early scaffold (v0.7.0). Markdown, HTML, and PDF reports, per-query data exports (Parquet / Arrow / TSV, to a folder or S3), and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
 
 ## Install
 
 ```bash
-uv sync                  # core: markdown + HTML reports
+uv sync                  # core: markdown + HTML reports, TSV exports
 uv sync --extra pdf      # also enable PDF output (requires Pango / Cairo)
+uv sync --extra arrow    # also enable Parquet / Arrow exports and S3 destinations
 ```
 
 PDF output needs WeasyPrint, which depends on system libraries (Pango,
@@ -244,7 +246,8 @@ Each file is a full `QuerySpec` (`name`, `dialect`, `query`, optional `descripti
 
 ## Outputs
 
-A run produces up to three artefacts in the report directory:
+A run produces up to three artefacts in the report directory, plus any
+configured `exports:` destinations:
 
 ```
 reports/monthly-revenue-2026-04-29.md           ← report
@@ -253,6 +256,12 @@ reports/monthly-revenue-2026-04-29_exports/     ← TSV exports (opt-in)
   ├── total_revenue.tsv
   ├── revenue_by_nation.tsv
   └── top_orders_raw.tsv
+
+exports/Monthly Revenue/2026-04-29/             ← `exports:` target (opt-in)
+  ├── total_revenue.parquet
+  ├── revenue_by_nation.parquet
+  └── top_orders_raw.parquet
+s3://analytics-landing/orionbelt/…/*.parquet    ← `exports:` target (opt-in)
 ```
 
 ### Report — markdown, HTML, or PDF
@@ -305,6 +314,80 @@ One file per query, named after the query and sanitised to safe path chars. TSV 
 
 See [`examples/monthly-revenue-2026-04-29_exports/`](examples/monthly-revenue-2026-04-29_exports/).
 
+### Data exports — Parquet / Arrow / TSV, to a folder or S3
+
+`exports:` is a list of destinations, each written on a fully successful run —
+one file per query, named after the query (sanitised to safe path chars):
+
+```yaml
+exports:
+  - format: parquet                        # parquet | arrow | tsv
+    uri: exports/{name}/{date}/            # local folder
+    compression: zstd                      # default | none | snappy | gzip | brotli | lz4 | zstd
+
+  - format: parquet
+    uri: s3://analytics-landing/orionbelt/{date}/
+    region: eu-central-1
+    # endpoint_override: http://localhost:9000   # MinIO / R2 / Ceph
+```
+
+`uri` takes the same placeholders as `report.output` (`{name}`, `{date}`,
+`{datetime}`, `{time_filename}`, `{tz}`, …) and names a **directory prefix**.
+Local relative paths are rebased under `--output-dir` when that flag is set,
+exactly like the report path. Several targets can run side by side (e.g. a
+local folder for the team, an S3 prefix for the warehouse).
+
+**Values are natively typed.** Parquet and Arrow are typed formats, so for
+those targets the runner re-executes each query with `format_values=false` and
+writes what comes back — `double`, `int64`, `timestamp[us]`, not the report's
+locale-formatted strings. That's one extra OBSL execute per query; the report
+still renders from the formatted run, so its cells stay OBSL-authoritative.
+`format: tsv` needs no second call and mirrors the report exactly.
+
+| format    | extension  | values                    | compression                                   |
+| --------- | ---------- | ------------------------- | --------------------------------------------- |
+| `parquet` | `.parquet` | native types (raw run)    | `snappy` (default), `gzip`, `zstd`, `brotli`, `lz4`, `none` |
+| `arrow`   | `.arrow`   | native types (raw run)    | uncompressed (default), `lz4`, `zstd`         |
+| `tsv`     | `.tsv`     | formatted, as in the report | —                                           |
+
+`parquet` / `arrow` and any `s3://` destination need the optional `arrow`
+extra (`uv sync --extra arrow`), which pulls in pyarrow — it provides both the
+file formats and the S3 client. `tsv` to a local folder needs nothing extra.
+
+**S3 credentials are never read from the spec.** pyarrow uses the standard AWS
+chain: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`),
+`~/.aws/credentials`, or the instance / task / IRSA role — so a spec file stays
+safe to commit. Only the non-secret `region` and `endpoint_override` live in
+the spec; `AWS_ENDPOINT_URL` works as a fallback for the latter.
+
+Exports never take the run down with them: an unreachable bucket or a failed
+raw re-execute is logged (`export_target_failed` / `raw_execute_failed`) and
+skipped, leaving the report and run log intact. A query whose raw re-execute
+failed is *omitted* from typed targets rather than written with string columns,
+so a downstream schema never silently changes shape.
+
+### Export-only runs — `no_report`
+
+Set `no_report: true` to skip report rendering entirely: queries run, `exports:`
+targets are written, and the run log still lands (that's the audit trail).
+
+```yaml
+name: Revenue Extract
+no_report: true
+queries: [...]
+exports:
+  - format: parquet
+    uri: s3://analytics-landing/orionbelt/{name}/{date}/
+```
+
+The `report:` block becomes optional in this mode — keep it to toggle reporting
+off without deleting the config (the run log then stays in its configured
+folder), or drop it and the log goes to `{name}-{datetime}.run.yaml`, rebased
+under `--output-dir`. `report.export_results` (the sibling-TSV shortcut) is
+report-relative and therefore inert here; use an `exports:` target instead.
+
+See [`examples/revenue-export-only.yaml`](examples/revenue-export-only.yaml).
+
 ## Architecture
 
 The runner talks to OBSL through a small `ObslClient` Protocol. One implementation today (HTTP). Tests can drop in a fake; an in-process implementation can be added later without touching the runner, report, or CLI code.
@@ -314,7 +397,9 @@ spec.yaml ──▶ load_spec ──▶ Runner ──▶ ObslClient ──▶ OB
                               │
                               ├─▶ render_markdown / render_html / render_pdf ──▶ report.md|html|pdf
                               ├─▶ render_runlog                 ──▶ report.run.yaml
-                              └─▶ render_tsv (× N)              ──▶ report_exports/*.tsv
+                              ├─▶ render_tsv (× N)              ──▶ report_exports/*.tsv
+                              └─▶ render_export (× N) ──▶ Sink  ──▶ ./folder/*.parquet|arrow|tsv
+                                                                    s3://bucket/prefix/*
 ```
 
 ## License

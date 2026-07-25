@@ -82,6 +82,8 @@ def run(
         typer.echo(f"Report written: {result.report_path}")
     if result.exports_dir:
         typer.echo(f"Exports written: {result.exports_dir}")
+    for location in result.export_locations:
+        typer.echo(f"Exports written: {location}")
     if result.runlog_path:
         typer.echo(f"Run log written: {result.runlog_path}")
 

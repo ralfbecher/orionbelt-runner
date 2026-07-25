@@ -13,12 +13,23 @@ import structlog
 
 from orionbelt_runner import __version__
 from orionbelt_runner.client import ExecuteResult, ObslClient
-from orionbelt_runner.exports import render_tsv, safe_export_filename
+from orionbelt_runner.exports import (
+    FORMAT_EXTENSIONS,
+    render_export,
+    render_tsv,
+    safe_export_filename,
+)
 from orionbelt_runner.report import render_html, render_markdown, render_pdf
 from orionbelt_runner.runlog import ObslMeta, QueryLogEntry, RunLog, render_runlog
-from orionbelt_runner.spec import ModelSpec, QuerySpec, ReportSection, RunSpec
+from orionbelt_runner.sinks import open_sink
+from orionbelt_runner.spec import ExportTarget, ModelSpec, QuerySpec, ReportSection, RunSpec
 
 log = structlog.get_logger("orionbelt_runner")
+
+# Runlog location for export-only specs that dropped the `report:` block —
+# there's no report path to mirror. `_runlog_path_from_report` appends
+# `.run.yaml`, so this template carries no extension of its own.
+DEFAULT_RUNLOG_OUTPUT = "{name}-{datetime}"
 
 
 @dataclass
@@ -32,6 +43,9 @@ class RunResult:
     report_path: Path | None = None
     runlog_path: Path | None = None
     exports_dir: Path | None = None
+    # One entry per configured ``exports:`` target that wrote at least one
+    # file — the resolved folder path or ``s3://bucket/prefix``.
+    export_locations: list[str] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -57,6 +71,12 @@ class Runner:
         session_id: str | None = None
         model_id: str | None = spec.obsl.model_id
         results: dict[str, ExecuteResult] = {}
+        # Parquet / Arrow are typed formats, so they need the unformatted
+        # result. Fetched with a second execute per query (format_values=false)
+        # only when such a target is configured — the report keeps using the
+        # formatted run so its cells stay OBSL-authoritative.
+        needs_raw = any(t.needs_raw_values for t in spec.exports)
+        raw_results: dict[str, ExecuteResult] = {}
         errors: dict[str, str] = {}
         query_entries: list[QueryLogEntry] = []
         report_basis: datetime = started_at
@@ -99,6 +119,15 @@ class Runner:
                         )
                     )
                     log.info("query_done", name=q.name, rows=len(result.rows))
+                    if needs_raw:
+                        self._fetch_raw(
+                            q,
+                            spec,
+                            dialect=dialect,
+                            model_id=model_id,
+                            session_id=session_id,
+                            into=raw_results,
+                        )
                 except Exception as exc:  # noqa: BLE001 — surface anything the client raises
                     duration_ms = (time.monotonic_ns() - t0) / 1e6
                     msg = f"{type(exc).__name__}: {exc}"
@@ -127,12 +156,22 @@ class Runner:
 
         report_path: Path | None = None
         exports_dir: Path | None = None
+        export_locations: list[str] = []
         if results and not errors:
-            report_path = self._render_report(
-                spec, results, report_basis, output_dir, tz_name=tz_name, duration_ms=duration_ms
-            )
-            log.info("report_written", path=str(report_path))
-            if spec.report.export_results:
+            if spec.renders_report:
+                report_path = self._render_report(
+                    spec,
+                    results,
+                    report_basis,
+                    output_dir,
+                    tz_name=tz_name,
+                    duration_ms=duration_ms,
+                )
+                log.info("report_written", path=str(report_path))
+            # The sibling-TSV shortcut is defined relative to the report file,
+            # so it only applies when a report was rendered. Export-only runs
+            # use `exports:` targets instead.
+            if report_path is not None and spec.report is not None and spec.report.export_results:
                 exports_dir = self._write_exports(results, report_path)
                 if exports_dir is not None:
                     log.info(
@@ -140,6 +179,17 @@ class Runner:
                         dir=str(exports_dir),
                         files=len(results),
                     )
+            if spec.exports:
+                ctx = _build_template_context(
+                    spec.name, report_basis, tz_name, duration_ms=duration_ms
+                )
+                export_locations = self._write_export_targets(
+                    spec.exports,
+                    results,
+                    raw_results,
+                    ctx=ctx,
+                    output_dir=output_dir,
+                )
 
         runlog_path = self._write_runlog(
             spec=spec,
@@ -166,8 +216,104 @@ class Runner:
             report_path=report_path,
             runlog_path=runlog_path,
             exports_dir=exports_dir,
+            export_locations=export_locations,
             errors=errors,
         )
+
+    def _fetch_raw(
+        self,
+        q: QuerySpec,
+        spec: RunSpec,
+        *,
+        dialect: str,
+        model_id: str | None,
+        session_id: str | None,
+        into: dict[str, ExecuteResult],
+    ) -> None:
+        """Re-execute ``q`` with ``format_values=false`` for typed exports.
+
+        Timezone is still forwarded so timestamp cells come back in the
+        report's zone; locale is irrelevant without value formatting.
+
+        A failure here is not fatal — the report and the formatted exports are
+        already safe. The query is simply skipped by the parquet / arrow
+        targets, which is louder (a missing file) than the alternative of
+        silently falling back to string-typed columns and changing the schema
+        downstream consumers rely on.
+        """
+        try:
+            into[q.name] = self._client.execute(
+                q.query,
+                dialect=dialect,
+                model_id=model_id,
+                session_id=session_id,
+                format_values=False,
+                timezone=spec.obsl.timezone,
+            )
+        except Exception as exc:  # noqa: BLE001 — exports must not fail the run
+            log.warning(
+                "raw_execute_failed",
+                name=q.name,
+                error=f"{type(exc).__name__}: {exc}",
+                hint="query will be skipped by parquet / arrow export targets",
+            )
+
+    def _write_export_targets(
+        self,
+        targets: list[ExportTarget],
+        results: dict[str, ExecuteResult],
+        raw_results: dict[str, ExecuteResult],
+        *,
+        ctx: dict[str, Any],
+        output_dir: Path | None,
+    ) -> list[str]:
+        """Write every configured ``exports:`` target; return their locations.
+
+        One file per query per target. Typed formats read from ``raw_results``
+        (the ``format_values=false`` run), TSV from the formatted ``results``
+        so it mirrors the report.
+
+        Like the sibling-TSV shortcut, a failing target is logged and skipped —
+        an unreachable bucket must not discard a report that already rendered.
+        """
+        locations: list[str] = []
+        for target in targets:
+            source = raw_results if target.needs_raw_values else results
+            try:
+                uri = target.uri.format(**ctx)
+                sink = open_sink(
+                    uri,
+                    endpoint_override=target.endpoint_override,
+                    region=target.region,
+                    base_dir=output_dir,
+                )
+                extension = FORMAT_EXTENSIONS[target.format]
+                written = 0
+                for name, result in source.items():
+                    body = render_export(result, fmt=target.format, compression=target.compression)
+                    sink.write(safe_export_filename(name, extension=extension), body)
+                    written += 1
+            except Exception as exc:  # noqa: BLE001 — never let exports mask the real run
+                log.warning(
+                    "export_target_failed",
+                    uri=target.uri,
+                    format=target.format,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+
+            skipped = sorted(set(results) - set(source))
+            if skipped:
+                log.warning("export_queries_skipped", uri=sink.location, queries=skipped)
+            if written:
+                locations.append(sink.location)
+            log.info(
+                "export_target_written",
+                location=sink.location,
+                format=target.format,
+                files=written,
+            )
+        return locations
 
     def _preflight_format_patterns(
         self,
@@ -322,11 +468,13 @@ class Runner:
     ) -> Path:
         ctx = _build_template_context(spec.name, started_at, tz_name, duration_ms=duration_ms)
         report_spec = spec.report
+        if report_spec is None:  # pragma: no cover - guarded by spec.renders_report
+            raise ValueError("cannot render a report: spec has no `report:` block")
         if not report_spec.sections:
             auto = _auto_sections(spec.queries)
             if auto:
                 report_spec = report_spec.model_copy(update={"sections": auto})
-        out_path = _resolve_output_path(spec.report.output, ctx, output_dir)
+        out_path = _resolve_output_path(report_spec.output, ctx, output_dir)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if report_spec.format == "pdf":
             pdf_bytes = render_pdf(report_spec, results, context=ctx)
@@ -382,15 +530,17 @@ class Runner:
         Always attempted, even when queries failed — that's exactly when
         the log is most useful. Path mirrors the report path stem with
         ``.md`` swapped to ``.run.yaml`` (or appended when the spec uses
-        a non-markdown output template).
+        a non-markdown output template). Export-only specs that dropped the
+        ``report:`` block fall back to ``{name}-{datetime}.run.yaml``,
+        rebased under ``--output-dir`` like any other relative path.
 
         Failure to write is logged but not fatal: the runner has already
         produced everything else it can.
         """
         try:
             ctx = _build_template_context(spec.name, report_basis, tz_name)
-            report_template_path = _resolve_output_path(spec.report.output, ctx, output_dir)
-            runlog_path = _runlog_path_from_report(report_template_path)
+            template = spec.report.output if spec.report is not None else DEFAULT_RUNLOG_OUTPUT
+            runlog_path = _runlog_path_from_report(_resolve_output_path(template, ctx, output_dir))
 
             run_log = RunLog(
                 spec=spec.name,
