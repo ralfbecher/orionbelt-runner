@@ -5,6 +5,7 @@ A run spec is a self-describing YAML document combining:
 * OBSL connection details
 * A list of named queries (any valid OBML query body)
 * A report config (output path, sections referencing queries)
+* Zero or more data-export targets (folder or S3 bucket)
 """
 
 from __future__ import annotations
@@ -12,8 +13,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ruamel.yaml import YAML
+
+# Compression codecs each export format accepts. "default" leaves the choice
+# to the writer (snappy for parquet, uncompressed for arrow/tsv).
+_CODECS: dict[str, set[str]] = {
+    "parquet": {"default", "none", "snappy", "gzip", "brotli", "lz4", "zstd"},
+    "arrow": {"default", "none", "lz4", "zstd"},
+    "tsv": {"default", "none"},
+}
 
 
 class ModelSpec(BaseModel):
@@ -130,6 +139,58 @@ class ReportSpec(BaseModel):
     export_results: bool = False
 
 
+class ExportTarget(BaseModel):
+    """One data-export destination — a folder or an S3 prefix.
+
+    Each target writes one file per query, named after the query (sanitised
+    to safe path chars) with the format's extension. Exports are only written
+    on a fully successful run.
+
+    ``uri`` accepts the same ``str.format`` placeholders as ``report.output``
+    (``{name}``, ``{date}``, ``{datetime}``, ``{time_filename}``, ``{tz}``, …)
+    and points at a *directory prefix*:
+
+    * ``./out/{date}/`` or ``/var/data/{name}`` — local folder. Relative paths
+      resolve under ``--output-dir`` when that flag is set, exactly like the
+      report path.
+    * ``s3://bucket/prefix/{date}/`` — S3 or any S3-compatible store.
+
+    ``parquet`` / ``arrow`` need the optional ``arrow`` extra
+    (``uv sync --extra arrow``) and carry *native types* — for those formats
+    the runner re-executes each query with ``format_values=false`` so numbers
+    and timestamps land as ``double`` / ``timestamp`` rather than as
+    locale-formatted strings. ``tsv`` mirrors the report's formatted cells and
+    needs no extra dependency.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: Literal["parquet", "arrow", "tsv"] = "parquet"
+    uri: str
+    compression: Literal["default", "none", "snappy", "gzip", "brotli", "lz4", "zstd"] = "default"
+    # S3 only. Credentials always come from the standard AWS chain (env vars,
+    # ~/.aws/credentials, instance/task role) — never from the spec file.
+    # Set endpoint_override for MinIO / Cloudflare R2 / Ceph; the
+    # AWS_ENDPOINT_URL env var is used as a fallback when this is unset.
+    endpoint_override: str | None = None
+    region: str | None = None
+
+    @model_validator(mode="after")
+    def _check_compression(self) -> ExportTarget:
+        allowed = _CODECS[self.format]
+        if self.compression not in allowed:
+            raise ValueError(
+                f"compression {self.compression!r} is not valid for format "
+                f"{self.format!r} (allowed: {', '.join(sorted(allowed))})"
+            )
+        return self
+
+    @property
+    def needs_raw_values(self) -> bool:
+        """True when this target wants natively typed (unformatted) cells."""
+        return self.format in {"parquet", "arrow"}
+
+
 class RunSpec(BaseModel):
     """Top-level run definition.
 
@@ -137,6 +198,11 @@ class RunSpec(BaseModel):
     folder via ``queries_dir:``. When both are set, dir queries (alpha-sorted
     by relative path) run first, then inline queries in spec order. ``load_spec``
     enforces that at least one query exists overall and that names are unique.
+
+    Set ``no_report: true`` for an **export-only** run — queries execute and
+    ``exports:`` targets are written, but no report is rendered. The ``report:``
+    block then becomes optional; keep it (it's ignored except as the runlog's
+    location) to toggle reporting off without deleting the config.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -147,7 +213,27 @@ class RunSpec(BaseModel):
     obsl: ObslSpec = Field(default_factory=ObslSpec)
     queries_dir: Path | None = None
     queries: list[QuerySpec] = Field(default_factory=list)
-    report: ReportSpec
+    report: ReportSpec | None = None
+    # Export-only run: execute queries and write `exports:` targets, skip
+    # rendering (and skip `report.export_results`, which is report-relative).
+    no_report: bool = False
+    # Data exports to a folder or S3 bucket — independent of the report and of
+    # ``report.export_results`` (the sibling-TSV shortcut), which keeps working.
+    exports: list[ExportTarget] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_report_present(self) -> RunSpec:
+        if self.report is None and not self.no_report:
+            raise ValueError(
+                "spec has no `report:` block — add one, or set `no_report: true` "
+                "for an export-only run"
+            )
+        return self
+
+    @property
+    def renders_report(self) -> bool:
+        """True when this run should render a report."""
+        return self.report is not None and not self.no_report
 
 
 def load_spec(path: Path | str) -> RunSpec:

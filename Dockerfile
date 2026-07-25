@@ -20,15 +20,21 @@ WORKDIR /app
 # edits don't bust the dependency cache. --frozen installs the committed
 # uv.lock as-is: the image gets the exact versions CI tested, and the build
 # never re-resolves (so it can't drift between builds of the same commit).
+#
+# --extra arrow bundles pyarrow: Parquet / Arrow exports and s3:// destinations
+# are a headline use case for a scheduled container, and without it those
+# targets fail at runtime with an "install the extra" error the image can't
+# act on. Costs ~120 MB. (PDF stays out — WeasyPrint needs Pango / Cairo
+# system libraries, which is an apt-layer cost, not a wheel.)
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev --extra arrow
 
 # Now install the project itself. --no-editable copies the package into the
 # venv (rather than linking to /app/src), so the runtime stage needs only .venv.
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable --extra arrow
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.14-slim AS runtime

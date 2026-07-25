@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Run <a href="https://github.com/ralforion/orionbelt-semantic-layer">OrionBelt Semantic Layer</a> query batches and emit reports.</strong></p>
 
-[![Version 0.7.0](https://img.shields.io/badge/version-0.7.0-purple.svg)](https://github.com/ralforion/orionbelt-runner/releases)
+[![Version 0.8.0](https://img.shields.io/badge/version-0.8.0-purple.svg)](https://github.com/ralforion/orionbelt-runner/releases)
 [![OBSL 2.23.x](https://img.shields.io/badge/OBSL-2.23.x-9cf.svg)](https://github.com/ralforion/orionbelt-semantic-layer)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](LICENSE)
@@ -27,18 +27,20 @@ A run is a YAML document combining:
 - An **OBSL endpoint** (base URL, optional auth, optional locale/timezone, optional model to load)
 - A list of **named queries** — any valid OBML query body
 - A **report config** — markdown, HTML, or PDF output with sections bound to queries
+- Optional **data exports** — Parquet / Arrow / TSV to a folder or an S3 bucket (report optional: set `no_report: true` for an export-only run)
 
 Numeric and timestamp cells are pre-rendered server-side using each column's `format` pattern from the OBML model (the runner sends `format_values=true` on every query), so reports show e.g. `1.853.429,67` for `locale: de` without any client-side formatting. See [`examples/monthly-revenue-2026-04-29.md`](examples/monthly-revenue-2026-04-29.md) (markdown), [`examples/monthly-revenue-2026-04-29.html`](examples/monthly-revenue-2026-04-29.html) (HTML), and [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) (PDF) for sample outputs.
 
 ## Status
 
-Early scaffold (v0.7.0). Markdown, HTML, and PDF reports, with optional per-query TSV exports and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
+Early scaffold (v0.8.0). Markdown, HTML, and PDF reports, per-query data exports (Parquet / Arrow / TSV, to a folder or S3), and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
 
 ## Install
 
 ```bash
-uv sync                  # core: markdown + HTML reports
+uv sync                  # core: markdown + HTML reports, TSV exports
 uv sync --extra pdf      # also enable PDF output (requires Pango / Cairo)
+uv sync --extra arrow    # also enable Parquet / Arrow exports and S3 destinations
 ```
 
 PDF output needs WeasyPrint, which depends on system libraries (Pango,
@@ -108,9 +110,19 @@ docker run --rm \
 > and `OBSL_BASE_URL=http://host.docker.internal:8080` so the container can
 > reach it.
 
-The image covers markdown / HTML reports. PDF output (WeasyPrint + Pango /
-Cairo system libs) is not bundled — run `--extra pdf` on a host install for
-that.
+The image covers markdown / HTML reports and all data exports — pyarrow ships
+in it, so Parquet / Arrow and `s3://` destinations work out of the box (mount a
+volume for local export folders, or point at a bucket and pass AWS credentials
+as env vars). PDF output (WeasyPrint + Pango / Cairo system libs) is not
+bundled — run `--extra pdf` on a host install for that.
+
+```bash
+docker run --rm \
+  -e OBSL_BASE_URL=http://my-obsl:8080 \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_REGION \
+  -v "$PWD/examples:/work/examples" \
+  ralforion/orionbelt-runner run examples/revenue-export-only.yaml
+```
 
 Build it yourself instead of pulling:
 
@@ -145,7 +157,7 @@ ignored, so it's safe to leave set. A `401`/`403` from OBSL surfaces as an
 
 ## Compatibility & startup preflight
 
-This runner's **0.7.x** line tracks **OBSL 2.23.x**. Before running any query,
+This runner's **0.8.x** line tracks **OBSL 2.23.x**. Before running any query,
 `orionbelt-runner run` calls the unauthenticated `/health` endpoint and checks:
 
 - the server version is in the supported `2.23.x` line (older → upgrade the
@@ -244,7 +256,8 @@ Each file is a full `QuerySpec` (`name`, `dialect`, `query`, optional `descripti
 
 ## Outputs
 
-A run produces up to three artefacts in the report directory:
+A run produces up to three artefacts in the report directory, plus any
+configured `exports:` destinations:
 
 ```
 reports/monthly-revenue-2026-04-29.md           ← report
@@ -253,6 +266,12 @@ reports/monthly-revenue-2026-04-29_exports/     ← TSV exports (opt-in)
   ├── total_revenue.tsv
   ├── revenue_by_nation.tsv
   └── top_orders_raw.tsv
+
+exports/Monthly Revenue/2026-04-29/             ← `exports:` target (opt-in)
+  ├── total_revenue.parquet
+  ├── revenue_by_nation.parquet
+  └── top_orders_raw.parquet
+s3://analytics-landing/orionbelt/…/*.parquet    ← `exports:` target (opt-in)
 ```
 
 ### Report — markdown, HTML, or PDF
@@ -305,6 +324,105 @@ One file per query, named after the query and sanitised to safe path chars. TSV 
 
 See [`examples/monthly-revenue-2026-04-29_exports/`](examples/monthly-revenue-2026-04-29_exports/).
 
+### Data exports — Parquet / Arrow / TSV, to a folder or S3
+
+`exports:` is a list of destinations, each written on a fully successful run —
+one file per query, named after the query (sanitised to safe path chars):
+
+```yaml
+exports:
+  - format: parquet                        # parquet | arrow | tsv
+    uri: exports/{name}/{date}/            # local folder
+    compression: zstd                      # default | none | snappy | gzip | brotli | lz4 | zstd
+
+  - format: parquet
+    uri: s3://analytics-landing/orionbelt/{date}/
+    region: eu-central-1
+    # endpoint_override: http://localhost:9000   # MinIO / R2 / Ceph
+```
+
+`uri` takes the same placeholders as `report.output` (`{name}`, `{date}`,
+`{datetime}`, `{time_filename}`, `{tz}`, …) and names a **directory prefix**.
+Local relative paths are rebased under `--output-dir` when that flag is set,
+exactly like the report path. Several targets can run side by side (e.g. a
+local folder for the team, an S3 prefix for the warehouse).
+
+**Values are natively typed.** Parquet and Arrow are typed formats, so for
+those targets the runner executes with `format_values=false` and writes what
+comes back — `double`, `int64`, `timestamp[us]`, not the report's
+locale-formatted strings.
+
+The runner only pays for what a run actually consumes:
+
+| spec | executes per query |
+| --- | --- |
+| report (or a `tsv` target) only | 1 — formatted |
+| report (or a `tsv` target) **+** parquet / arrow | 2 — formatted for the report, raw for the export |
+| `no_report: true` with only parquet / arrow targets | 1 — raw |
+
+So a report run keeps rendering from the formatted call (its cells stay
+OBSL-authoritative), while an export-only job doesn't pay double DB cost for
+display strings nobody reads.
+
+| format    | extension  | values                    | compression                                   |
+| --------- | ---------- | ------------------------- | --------------------------------------------- |
+| `parquet` | `.parquet` | native types (raw run)    | `snappy` (default), `gzip`, `zstd`, `brotli`, `lz4`, `none` |
+| `arrow`   | `.arrow`   | native types (raw run)    | uncompressed (default), `lz4`, `zstd`         |
+| `tsv`     | `.tsv`     | formatted, as in the report | —                                           |
+
+`parquet` / `arrow` and any `s3://` destination need the optional `arrow`
+extra (`uv sync --extra arrow`), which pulls in pyarrow — it provides both the
+file formats and the S3 client. `tsv` to a local folder needs nothing extra.
+
+**S3 credentials are never read from the spec.** pyarrow uses the standard AWS
+chain: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`),
+`~/.aws/credentials`, or the instance / task / IRSA role — so a spec file stays
+safe to commit. Only the non-secret `region` and `endpoint_override` live in
+the spec; `AWS_ENDPOINT_URL` works as a fallback for the latter.
+
+**Failures are visible, but never destructive.** An unreachable bucket or a
+failed raw re-execute is logged (`export_target_failed` / `raw_execute_failed`)
+and skipped, leaving the report and run log intact — but the CLI then prints
+what didn't land and **exits 1**, so a scheduled job whose data never arrived
+can't look like a clean run:
+
+```
+$ orionbelt-runner run extract.yaml; echo "exit=$?"
+Run log written: reports/Revenue Extract-2026-04-29T12-00-00.run.yaml
+  export parquet → s3://analytics-landing/… failed: OSError: bucket not found
+
+1 export target(s) failed
+exit=1
+```
+
+A query whose raw re-execute failed is *omitted* from typed targets rather than
+written with string columns, so a downstream schema never silently changes
+shape — and that omission is reported the same way. On `RunResult`,
+`succeeded` still means "every query ran"; `fully_delivered` additionally means
+"every configured export landed".
+
+### Export-only runs — `no_report`
+
+Set `no_report: true` to skip report rendering entirely: queries run, `exports:`
+targets are written, and the run log still lands (that's the audit trail).
+
+```yaml
+name: Revenue Extract
+no_report: true
+queries: [...]
+exports:
+  - format: parquet
+    uri: s3://analytics-landing/orionbelt/{name}/{date}/
+```
+
+The `report:` block becomes optional in this mode — keep it to toggle reporting
+off without deleting the config (the run log then stays in its configured
+folder), or drop it and the log goes to `{name}-{datetime}.run.yaml`, rebased
+under `--output-dir`. `report.export_results` (the sibling-TSV shortcut) is
+report-relative and therefore inert here; use an `exports:` target instead.
+
+See [`examples/revenue-export-only.yaml`](examples/revenue-export-only.yaml).
+
 ## Architecture
 
 The runner talks to OBSL through a small `ObslClient` Protocol. One implementation today (HTTP). Tests can drop in a fake; an in-process implementation can be added later without touching the runner, report, or CLI code.
@@ -314,7 +432,9 @@ spec.yaml ──▶ load_spec ──▶ Runner ──▶ ObslClient ──▶ OB
                               │
                               ├─▶ render_markdown / render_html / render_pdf ──▶ report.md|html|pdf
                               ├─▶ render_runlog                 ──▶ report.run.yaml
-                              └─▶ render_tsv (× N)              ──▶ report_exports/*.tsv
+                              ├─▶ render_tsv (× N)              ──▶ report_exports/*.tsv
+                              └─▶ render_export (× N) ──▶ Sink  ──▶ ./folder/*.parquet|arrow|tsv
+                                                                    s3://bucket/prefix/*
 ```
 
 ## License

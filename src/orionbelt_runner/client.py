@@ -24,7 +24,7 @@ log = structlog.get_logger("orionbelt_runner.client")
 # fallback). Sending it is safe against pre-auth servers — they ignore it.
 DEFAULT_API_KEY_HEADER = "X-API-Key"
 
-# This runner's 0.7.x line tracks the OBSL 2.23 minor series — the API surface
+# This runner's 0.8.x line tracks the OBSL 2.23 minor series — the API surface
 # (unified auth, the endpoints used here, and the JSON-Schema ingestion boundary
 # added in 2.16) is pinned to that release. Bump these in lockstep with the
 # runner's own minor version.
