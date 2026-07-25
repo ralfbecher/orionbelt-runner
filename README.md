@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Run <a href="https://github.com/ralforion/orionbelt-semantic-layer">OrionBelt Semantic Layer</a> query batches and emit reports.</strong></p>
 
-[![Version 0.8.0](https://img.shields.io/badge/version-0.8.0-purple.svg)](https://github.com/ralforion/orionbelt-runner/releases)
+[![Version 0.8.1](https://img.shields.io/badge/version-0.8.1-purple.svg)](https://github.com/ralforion/orionbelt-runner/releases)
 [![OBSL 2.23.x](https://img.shields.io/badge/OBSL-2.23.x-9cf.svg)](https://github.com/ralforion/orionbelt-semantic-layer)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](LICENSE)
@@ -33,7 +33,7 @@ Numeric and timestamp cells are pre-rendered server-side using each column's `fo
 
 ## Status
 
-Early scaffold (v0.8.0). Markdown, HTML, and PDF reports, per-query data exports (Parquet / Arrow / TSV, to a folder or S3), and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
+Early scaffold (v0.8.1). Markdown, HTML, and PDF reports, per-query data exports (Parquet / Arrow / TSV, to a folder or S3), and an always-on YAML run log sidecar. No scheduler yet — drive it from cron / systemd / GitHub Actions / Cloud Scheduler / etc.
 
 ## Install
 
@@ -347,10 +347,17 @@ Local relative paths are rebased under `--output-dir` when that flag is set,
 exactly like the report path. Several targets can run side by side (e.g. a
 local folder for the team, an S3 prefix for the warehouse).
 
-**Values are natively typed.** Parquet and Arrow are typed formats, so for
-those targets the runner executes with `format_values=false` and writes what
-comes back — `double`, `int64`, `timestamp[us]`, not the report's
-locale-formatted strings.
+**Values are natively typed.** Parquet and Arrow targets read through OBSL's
+Arrow transport (`?format=arrow`), which answers with a real Arrow table rather
+than JSON. The server's own types are written through untouched — `decimal128`
+for governed DECIMAL measures, `timestamp[us]`, `int64`, `double` — with no
+client-side inference and no locale-formatted strings anywhere in the path.
+
+Against a deployment that doesn't answer the Arrow frame, the runner falls back
+to JSON rows (one request, no retry) and infers types from OBSL's per-column
+`type` hint, including `decimal(p, s)`. That path yields `double` where the
+transport would have given exact `decimal128`, so prefer a server on the
+supported line.
 
 The runner only pays for what a run actually consumes:
 

@@ -8,7 +8,10 @@ runner, report, or CLI code.
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
@@ -16,6 +19,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orionbelt_runner import __version__
+from orionbelt_runner.arrow_support import require_pyarrow
 
 log = structlog.get_logger("orionbelt_runner.client")
 
@@ -23,6 +27,10 @@ log = structlog.get_logger("orionbelt_runner.client")
 # server-side via API_KEY_HEADER; Authorization: Bearer is also accepted as a
 # fallback). Sending it is safe against pre-auth servers — they ignore it.
 DEFAULT_API_KEY_HEADER = "X-API-Key"
+
+# Media type of OBSL's ``?format=arrow`` result frame (OBSL >= 2.21). Sent as
+# Accept too — the server negotiates on either the parameter or the header.
+ARROW_RESULT_MEDIA_TYPE = "application/vnd.orionbelt.result+arrow"
 
 # This runner's 0.8.x line tracks the OBSL 2.23 minor series — the API surface
 # (unified auth, the endpoints used here, and the JSON-Schema ingestion boundary
@@ -72,13 +80,78 @@ def _parse_semver(value: str | None) -> tuple[int, int, int] | None:
     return int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
 
 
+def _decode_arrow_frame(body: bytes) -> ArrowResult:
+    """Decode OBSL's ``?format=arrow`` result frame.
+
+    Layout (OBSL >= 2.21)::
+
+        [u32 big-endian json_len][JSON envelope utf-8][gzip'd Arrow IPC stream]
+
+    The envelope is assembled fresh per request (so timing and the ``cached``
+    flag are accurate even on a server cache hit) while the Arrow sub-part
+    carries its own gzip and may be shipped verbatim from cache. The table is
+    returned as-is — server-side types (``decimal128``, ``timestamp``,
+    ``int64``) reach the Parquet / Arrow writers without a JSON round trip.
+    """
+    pa = require_pyarrow("Arrow result transport")
+    if len(body) < 4:
+        raise ValueError(f"Arrow result frame is truncated ({len(body)} bytes)")
+    meta_len = int.from_bytes(body[:4], "big")
+    end = 4 + meta_len
+    if len(body) < end:
+        raise ValueError(
+            f"Arrow result frame declares a {meta_len}-byte envelope "
+            f"but carries only {len(body) - 4}"
+        )
+    meta = ExecuteResult.model_validate(json.loads(body[4:end].decode("utf-8")))
+    table = pa.ipc.open_stream(gzip.decompress(body[end:])).read_all()
+    return ArrowResult(meta=meta, table=table)
+
+
+def _flatten_warning(item: Any) -> str:
+    """Render one OBSL warning as a line of text.
+
+    OBSL returns structured warnings — ``{code, severity, message, path, hint,
+    context}`` — on execute, compile, and model-load responses. The runner logs
+    warnings as plain lines (run log, structlog), so they're flattened to
+    ``"code: message (hint: …)"`` on the way in. Plain strings pass through, so
+    older servers and test fixtures keep working.
+    """
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        code = item.get("code")
+        message = item.get("message") or item.get("detail") or ""
+        hint = item.get("hint")
+        text = f"{code}: {message}" if code and message else str(code or message or item)
+        return f"{text} (hint: {hint})" if hint else text
+    return str(item)
+
+
+class ObslResponse(BaseModel):
+    """Base for OBSL response models that can carry structured warnings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def _flatten_warnings(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [_flatten_warning(w) for w in value]
+        return value
+
+
 class ColumnMetadata(BaseModel):
     """Per-column metadata returned by OBSL alongside rows."""
 
     model_config = ConfigDict(extra="ignore")
 
     name: str
-    type: str = "string"  # "string" | "number" | "datetime" | "binary"
+    # "string" | "number" | "datetime" | "binary" | "decimal(p, s)" — OBSL
+    # reports governed DECIMAL columns with their precision and scale.
+    type: str = "string"
     format: str | None = None
 
 
@@ -135,10 +208,12 @@ class ExplainPlan(BaseModel):
     cfl_legs: list[ExplainCflLeg] = Field(default_factory=list)
 
 
-class ExecuteResult(BaseModel):
-    """Rows + metadata returned from POST /v1/query/execute (or shortcut)."""
+class ExecuteResult(ObslResponse):
+    """Rows + metadata returned from POST /v1/query/execute (or shortcut).
 
-    model_config = ConfigDict(extra="ignore")
+    Also models the JSON envelope of the ``format=arrow`` frame, which carries
+    every field here except ``rows`` (those ride in the Arrow sub-part).
+    """
 
     sql: str
     dialect: str
@@ -147,7 +222,6 @@ class ExecuteResult(BaseModel):
     row_count: int = 0
     execution_time_ms: float = 0.0
     timezone: str | None = None
-    warnings: list[str] = Field(default_factory=list)
     sql_valid: bool = True
     resolved: ResolvedInfo = Field(default_factory=ResolvedInfo)
     explain: ExplainPlan | None = None
@@ -161,14 +235,35 @@ class ExecuteResult(BaseModel):
         return value
 
 
-class CompileResult(BaseModel):
-    """SQL + metadata returned from POST /v1/query/sql (or shortcut)."""
+@dataclass(frozen=True)
+class ArrowResult:
+    """Outcome of an Arrow-transport execute.
 
-    model_config = ConfigDict(extra="ignore")
+    ``meta`` is the JSON envelope — every ``ExecuteResult`` field except the
+    rows (sql, columns, timing, warnings, resolved, explain, row_count), so
+    the run log is written from it unchanged.
+
+    ``table`` is the ``pyarrow.Table`` carrying the typed rows, or ``None``
+    when the server answered in JSON instead (a deployment that doesn't know
+    ``format=arrow``). In that fallback the rows ride in ``meta.rows`` and the
+    exporter infers types from them, so callers handle one shape either way —
+    use ``exports.to_arrow_table()`` rather than reading ``table`` directly.
+    """
+
+    meta: ExecuteResult
+    table: Any | None = None
+
+    @property
+    def from_arrow_transport(self) -> bool:
+        """True when the server sent typed Arrow rather than JSON."""
+        return self.table is not None
+
+
+class CompileResult(ObslResponse):
+    """SQL + metadata returned from POST /v1/query/sql (or shortcut)."""
 
     sql: str
     dialect: str
-    warnings: list[str] = Field(default_factory=list)
     sql_valid: bool = True
     resolved: ResolvedInfo = Field(default_factory=ResolvedInfo)
     explain: ExplainPlan | None = None
@@ -182,17 +277,14 @@ class SessionInfo(BaseModel):
     session_id: str
 
 
-class ModelLoadResult(BaseModel):
+class ModelLoadResult(ObslResponse):
     """Subset of POST /v1/sessions/{id}/models response the runner needs."""
-
-    model_config = ConfigDict(extra="ignore")
 
     model_id: str
     data_objects: int = 0
     dimensions: int = 0
     measures: int = 0
     metrics: int = 0
-    warnings: list[str] = Field(default_factory=list)
 
 
 class MeasureSummary(BaseModel):
@@ -257,6 +349,16 @@ class ObslClient(Protocol):
         locale: str | None = None,
         timezone: str | None = None,
     ) -> ExecuteResult: ...
+
+    def execute_arrow(
+        self,
+        query: dict[str, Any],
+        *,
+        dialect: str = "postgres",
+        model_id: str | None = None,
+        session_id: str | None = None,
+        timezone: str | None = None,
+    ) -> ArrowResult: ...
 
 
 class HttpObslClient:
@@ -440,21 +542,87 @@ class HttpObslClient:
             params["locale"] = locale
         if timezone is not None:
             params["timezone"] = timezone
-        if session_id is not None:
-            # Session endpoint: wrapped {model_id, query, dialect} body.
-            if model_id is None:
-                raise ValueError("model_id is required when session_id is set")
-            path = f"/v1/sessions/{session_id}/query/execute"
-            body: dict[str, Any] = {"model_id": model_id, "query": query, "dialect": dialect}
-        else:
-            # Shortcut endpoint: query body fields spread at top level,
-            # dialect as a query parameter.
-            path = "/v1/query/execute"
-            body = dict(query)
+        path, body = self._execute_target(
+            query, dialect=dialect, model_id=model_id, session_id=session_id
+        )
+        if session_id is None:
             params["dialect"] = dialect
         r = self._client.post(path, json=body, params=params)
         self._raise_for_status(r)
         return ExecuteResult.model_validate(r.json())
+
+    def execute_arrow(
+        self,
+        query: dict[str, Any],
+        *,
+        dialect: str = "postgres",
+        model_id: str | None = None,
+        session_id: str | None = None,
+        timezone: str | None = None,
+    ) -> ArrowResult:
+        """Execute a query asking OBSL for the Arrow result frame.
+
+        ``?format=arrow`` makes OBSL answer with
+        ``application/vnd.orionbelt.result+arrow``::
+
+            [u32 big-endian json_len][JSON envelope utf-8][gzip'd Arrow IPC]
+
+        The Arrow sub-part holds typed, locale-neutral rows straight from the
+        server — real ``decimal128`` / ``timestamp`` / ``int64``, no
+        client-side inference over JSON scalars — which is exactly what the
+        Parquet and Arrow exports want. ``format_values`` is deliberately
+        absent: this transport is raw by definition.
+
+        Servers that don't know the parameter simply answer in JSON; that's
+        detected by content type and returned as an :class:`ArrowResult` with
+        ``table=None``, rows in ``meta``, and a warning. No second request.
+        """
+        params: dict[str, str] = {"format": "arrow", "format_values": "false"}
+        if timezone is not None:
+            params["timezone"] = timezone
+        path, body = self._execute_target(
+            query, dialect=dialect, model_id=model_id, session_id=session_id
+        )
+        if session_id is None:
+            params["dialect"] = dialect
+        r = self._client.post(
+            path, json=body, params=params, headers={"Accept": ARROW_RESULT_MEDIA_TYPE}
+        )
+        self._raise_for_status(r)
+
+        content_type = r.headers.get("content-type", "")
+        if ARROW_RESULT_MEDIA_TYPE not in content_type:
+            log.warning(
+                "obsl_arrow_unsupported",
+                content_type=content_type,
+                hint=(
+                    "server ignored ?format=arrow — falling back to JSON rows with "
+                    "client-side type inference. Exact DECIMAL types need OBSL >= 2.21."
+                ),
+            )
+            return ArrowResult(meta=ExecuteResult.model_validate(r.json()))
+        return _decode_arrow_frame(r.content)
+
+    def _execute_target(
+        self,
+        query: dict[str, Any],
+        *,
+        dialect: str,
+        model_id: str | None,
+        session_id: str | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Resolve (path, body) for an execute call, session or shortcut."""
+        if session_id is not None:
+            # Session endpoint: wrapped {model_id, query, dialect} body.
+            if model_id is None:
+                raise ValueError("model_id is required when session_id is set")
+            return (
+                f"/v1/sessions/{session_id}/query/execute",
+                {"model_id": model_id, "query": query, "dialect": dialect},
+            )
+        # Shortcut endpoint: query body fields spread at top level, dialect as
+        # a query parameter (added by the caller).
+        return "/v1/query/execute", dict(query)
 
     # -- helpers -----------------------------------------------------------
 

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import structlog
 
 from orionbelt_runner import __version__
-from orionbelt_runner.client import ExecuteResult, ObslClient
+from orionbelt_runner.client import ArrowResult, ExecuteResult, ObslClient
 from orionbelt_runner.exports import (
     FORMAT_EXTENSIONS,
     render_export,
@@ -92,7 +92,7 @@ class Runner:
         # Nothing consumes rows (no report, no exports): the run log still
         # wants a result, so keep the formatted call as the default.
         format_first = needs_formatted or not needs_raw
-        raw_results: dict[str, ExecuteResult] = {}
+        raw_results: dict[str, ArrowResult] = {}
         errors: dict[str, str] = {}
         query_entries: list[QueryLogEntry] = []
         report_basis: datetime = started_at
@@ -114,17 +114,29 @@ class Runner:
                 t0 = time.monotonic_ns()
                 dialect = q.dialect or "postgres"
                 try:
-                    result = self._client.execute(
-                        q.query,
-                        dialect=dialect,
-                        model_id=model_id,
-                        session_id=session_id,
-                        format_values=format_first,
-                        # Locale only shapes formatted cells — irrelevant to a
-                        # raw run, where OBSL returns native JSON values.
-                        locale=spec.obsl.locale if format_first else None,
-                        timezone=spec.obsl.timezone,
-                    )
+                    if format_first:
+                        result = self._client.execute(
+                            q.query,
+                            dialect=dialect,
+                            model_id=model_id,
+                            session_id=session_id,
+                            format_values=True,
+                            locale=spec.obsl.locale,
+                            timezone=spec.obsl.timezone,
+                        )
+                    else:
+                        # Nothing consumes formatted cells: take the typed Arrow
+                        # transport as the one and only execute. Its envelope is
+                        # a full ExecuteResult (minus rows) for the run log.
+                        arrow = self._client.execute_arrow(
+                            q.query,
+                            dialect=dialect,
+                            model_id=model_id,
+                            session_id=session_id,
+                            timezone=spec.obsl.timezone,
+                        )
+                        raw_results[q.name] = arrow
+                        result = arrow.meta
                     duration_ms = (time.monotonic_ns() - t0) / 1e6
                     results[q.name] = result
                     query_entries.append(
@@ -136,20 +148,16 @@ class Runner:
                             result=result,
                         )
                     )
-                    log.info("query_done", name=q.name, rows=len(result.rows))
-                    if needs_raw:
-                        if format_first:
-                            self._fetch_raw(
-                                q,
-                                spec,
-                                dialect=dialect,
-                                model_id=model_id,
-                                session_id=session_id,
-                                into=raw_results,
-                            )
-                        else:
-                            # The single execute above already ran raw.
-                            raw_results[q.name] = result
+                    log.info("query_done", name=q.name, rows=result.row_count)
+                    if needs_raw and format_first:
+                        self._fetch_raw(
+                            q,
+                            spec,
+                            dialect=dialect,
+                            model_id=model_id,
+                            session_id=session_id,
+                            into=raw_results,
+                        )
                 except Exception as exc:  # noqa: BLE001 — surface anything the client raises
                     duration_ms = (time.monotonic_ns() - t0) / 1e6
                     msg = f"{type(exc).__name__}: {exc}"
@@ -253,9 +261,9 @@ class Runner:
         dialect: str,
         model_id: str | None,
         session_id: str | None,
-        into: dict[str, ExecuteResult],
+        into: dict[str, ArrowResult],
     ) -> None:
-        """Re-execute ``q`` with ``format_values=false`` for typed exports.
+        """Re-execute ``q`` over the Arrow transport for typed exports.
 
         Timezone is still forwarded so timestamp cells come back in the
         report's zone; locale is irrelevant without value formatting.
@@ -267,12 +275,11 @@ class Runner:
         downstream consumers rely on.
         """
         try:
-            into[q.name] = self._client.execute(
+            into[q.name] = self._client.execute_arrow(
                 q.query,
                 dialect=dialect,
                 model_id=model_id,
                 session_id=session_id,
-                format_values=False,
                 timezone=spec.obsl.timezone,
             )
         except Exception as exc:  # noqa: BLE001 — exports must not fail the run
@@ -287,7 +294,7 @@ class Runner:
         self,
         targets: list[ExportTarget],
         results: dict[str, ExecuteResult],
-        raw_results: dict[str, ExecuteResult],
+        raw_results: dict[str, ArrowResult],
         *,
         ctx: dict[str, Any],
         output_dir: Path | None,
@@ -296,8 +303,8 @@ class Runner:
         """Write every configured ``exports:`` target; return their locations.
 
         One file per query per target. Typed formats read from ``raw_results``
-        (the ``format_values=false`` run), TSV from the formatted ``results``
-        so it mirrors the report.
+        (the Arrow-transport run, whose tables are written through untouched),
+        TSV from the formatted ``results`` so it mirrors the report.
 
         A failing target is logged, appended to ``errors``, and skipped — an
         unreachable bucket must not discard a report that already rendered.
