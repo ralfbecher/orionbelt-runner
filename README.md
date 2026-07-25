@@ -110,9 +110,19 @@ docker run --rm \
 > and `OBSL_BASE_URL=http://host.docker.internal:8080` so the container can
 > reach it.
 
-The image covers markdown / HTML reports. PDF output (WeasyPrint + Pango /
-Cairo system libs) is not bundled — run `--extra pdf` on a host install for
-that.
+The image covers markdown / HTML reports and all data exports — pyarrow ships
+in it, so Parquet / Arrow and `s3://` destinations work out of the box (mount a
+volume for local export folders, or point at a bucket and pass AWS credentials
+as env vars). PDF output (WeasyPrint + Pango / Cairo system libs) is not
+bundled — run `--extra pdf` on a host install for that.
+
+```bash
+docker run --rm \
+  -e OBSL_BASE_URL=http://my-obsl:8080 \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_REGION \
+  -v "$PWD/examples:/work/examples" \
+  ralforion/orionbelt-runner run examples/revenue-export-only.yaml
+```
 
 Build it yourself instead of pulling:
 
@@ -338,11 +348,21 @@ exactly like the report path. Several targets can run side by side (e.g. a
 local folder for the team, an S3 prefix for the warehouse).
 
 **Values are natively typed.** Parquet and Arrow are typed formats, so for
-those targets the runner re-executes each query with `format_values=false` and
-writes what comes back — `double`, `int64`, `timestamp[us]`, not the report's
-locale-formatted strings. That's one extra OBSL execute per query; the report
-still renders from the formatted run, so its cells stay OBSL-authoritative.
-`format: tsv` needs no second call and mirrors the report exactly.
+those targets the runner executes with `format_values=false` and writes what
+comes back — `double`, `int64`, `timestamp[us]`, not the report's
+locale-formatted strings.
+
+The runner only pays for what a run actually consumes:
+
+| spec | executes per query |
+| --- | --- |
+| report (or a `tsv` target) only | 1 — formatted |
+| report (or a `tsv` target) **+** parquet / arrow | 2 — formatted for the report, raw for the export |
+| `no_report: true` with only parquet / arrow targets | 1 — raw |
+
+So a report run keeps rendering from the formatted call (its cells stay
+OBSL-authoritative), while an export-only job doesn't pay double DB cost for
+display strings nobody reads.
 
 | format    | extension  | values                    | compression                                   |
 | --------- | ---------- | ------------------------- | --------------------------------------------- |
@@ -360,11 +380,26 @@ chain: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`),
 safe to commit. Only the non-secret `region` and `endpoint_override` live in
 the spec; `AWS_ENDPOINT_URL` works as a fallback for the latter.
 
-Exports never take the run down with them: an unreachable bucket or a failed
-raw re-execute is logged (`export_target_failed` / `raw_execute_failed`) and
-skipped, leaving the report and run log intact. A query whose raw re-execute
-failed is *omitted* from typed targets rather than written with string columns,
-so a downstream schema never silently changes shape.
+**Failures are visible, but never destructive.** An unreachable bucket or a
+failed raw re-execute is logged (`export_target_failed` / `raw_execute_failed`)
+and skipped, leaving the report and run log intact — but the CLI then prints
+what didn't land and **exits 1**, so a scheduled job whose data never arrived
+can't look like a clean run:
+
+```
+$ orionbelt-runner run extract.yaml; echo "exit=$?"
+Run log written: reports/Revenue Extract-2026-04-29T12-00-00.run.yaml
+  export parquet → s3://analytics-landing/… failed: OSError: bucket not found
+
+1 export target(s) failed
+exit=1
+```
+
+A query whose raw re-execute failed is *omitted* from typed targets rather than
+written with string columns, so a downstream schema never silently changes
+shape — and that omission is reported the same way. On `RunResult`,
+`succeeded` still means "every query ran"; `fully_delivered` additionally means
+"every configured export landed".
 
 ### Export-only runs — `no_report`
 

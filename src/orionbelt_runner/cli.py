@@ -87,6 +87,14 @@ def run(
     if result.runlog_path:
         typer.echo(f"Run log written: {result.runlog_path}")
 
+    # Data the spec asked for that didn't land is a failed run, even when the
+    # report rendered — an export-only job must never exit 0 with no files.
+    if result.export_errors:
+        for message in result.export_errors:
+            typer.echo(f"  {message}", err=True)
+        typer.echo(f"\n{len(result.export_errors)} export target(s) failed", err=True)
+        sys.exit(1)
+
 
 @app.command()
 def version() -> None:

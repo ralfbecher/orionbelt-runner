@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from orionbelt_runner.client import ExecuteResult, ObslClient
+from orionbelt_runner.exports import MissingArrowDependencyError
 from orionbelt_runner.runner import Runner
 from orionbelt_runner.spec import ExportTarget, ObslSpec, QuerySpec, ReportSpec, RunSpec
 from tests.test_runner import FakeObslClient
@@ -193,10 +194,13 @@ def test_failed_raw_execute_skips_the_query_but_not_the_run(tmp_path: Path) -> N
 
     result = Runner(_as_protocol(fake)).run(spec)
 
-    assert result.succeeded
+    assert result.succeeded  # queries ran; the report is valid
     assert result.report_path is not None and result.report_path.exists()
     assert not (tmp_path / "out" / "by_country.parquet").exists()
     assert result.export_locations == []
+    # …but the run did not deliver what the spec asked for, and says so.
+    assert not result.fully_delivered
+    assert "by_country" in result.export_errors[0]
 
 
 def test_unreachable_target_does_not_discard_the_report(tmp_path: Path) -> None:
@@ -208,6 +212,41 @@ def test_unreachable_target_does_not_discard_the_report(tmp_path: Path) -> None:
     assert result.succeeded
     assert result.report_path is not None and result.report_path.exists()
     assert result.export_locations == []
+    assert not result.fully_delivered
+    assert "gs://not-supported/prefix" in result.export_errors[0]
+
+
+def test_export_only_run_that_wrote_nothing_is_not_a_clean_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Docker-without-pyarrow shape: exit code must not say 'all good'."""
+    fake = DualFakeClient()
+    spec = _spec(
+        tmp_path,
+        exports=[ExportTarget(format="parquet", uri="s3://bucket/prefix")],
+        no_report=True,
+    )
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise MissingArrowDependencyError("S3 exports need pyarrow")
+
+    monkeypatch.setattr("orionbelt_runner.runner.open_sink", explode)
+    result = Runner(_as_protocol(fake)).run(spec, output_dir=tmp_path)
+
+    assert result.succeeded  # every query ran…
+    assert not result.fully_delivered  # …but nothing landed
+    assert result.export_locations == []
+    assert "need pyarrow" in result.export_errors[0]
+
+
+def test_successful_run_is_fully_delivered(tmp_path: Path) -> None:
+    fake = DualFakeClient()
+    spec = _spec(tmp_path, exports=[ExportTarget(format="parquet", uri=str(tmp_path / "out"))])
+
+    result = Runner(_as_protocol(fake)).run(spec)
+
+    assert result.fully_delivered
+    assert result.export_errors == []
 
 
 def test_exports_are_skipped_when_a_query_failed(tmp_path: Path) -> None:
@@ -220,6 +259,83 @@ def test_exports_are_skipped_when_a_query_failed(tmp_path: Path) -> None:
 
     assert not result.succeeded
     assert not (tmp_path / "out").exists()
+
+
+# -- how many times each query is executed ---------------------------------
+
+
+def test_export_only_typed_targets_execute_each_query_once(tmp_path: Path) -> None:
+    """Nothing consumes formatted rows here, so don't pay for them."""
+    fake = DualFakeClient()
+    spec = _spec(
+        tmp_path,
+        exports=[
+            ExportTarget(format="parquet", uri=str(tmp_path / "p")),
+            ExportTarget(format="arrow", uri=str(tmp_path / "a")),
+        ],
+        no_report=True,
+    )
+
+    result = Runner(_as_protocol(fake)).run(spec, output_dir=tmp_path)
+
+    assert [c["format_values"] for c in fake.calls] == [False]
+    # Locale only shapes formatted cells — no point sending it on a raw run.
+    assert fake.calls[0]["locale"] is None
+    assert result.fully_delivered
+    table = pq.read_table(tmp_path / "p" / "by_country.parquet")
+    assert table.schema.field("Revenue").type == pa.float64()
+
+
+def test_export_only_with_a_tsv_target_still_needs_both_runs(tmp_path: Path) -> None:
+    fake = DualFakeClient()
+    spec = _spec(
+        tmp_path,
+        exports=[
+            ExportTarget(format="parquet", uri=str(tmp_path / "p")),
+            ExportTarget(format="tsv", uri=str(tmp_path / "t")),
+        ],
+        no_report=True,
+    )
+
+    Runner(_as_protocol(fake)).run(spec, output_dir=tmp_path)
+
+    assert [c["format_values"] for c in fake.calls] == [True, False]
+    assert "5.000,50 €" in (tmp_path / "t" / "by_country.tsv").read_text(encoding="utf-8")
+    assert pq.read_table(tmp_path / "p" / "by_country.parquet").column("Revenue").to_pylist() == [
+        5000.5,
+        7345.25,
+    ]
+
+
+def test_report_run_keeps_using_formatted_values(tmp_path: Path) -> None:
+    """The report must never silently switch to raw cells."""
+    fake = DualFakeClient()
+    spec = _spec(tmp_path, exports=[ExportTarget(format="parquet", uri=str(tmp_path / "p"))])
+
+    result = Runner(_as_protocol(fake)).run(spec)
+
+    assert [c["format_values"] for c in fake.calls] == [True, False]
+    assert result.report_path is not None
+    assert "5.000,50 €" in result.report_path.read_text(encoding="utf-8")
+
+
+def test_run_without_exports_executes_once_formatted(tmp_path: Path) -> None:
+    fake = DualFakeClient()
+    result = Runner(_as_protocol(fake)).run(_spec(tmp_path, exports=[]))
+
+    assert [c["format_values"] for c in fake.calls] == [True]
+    assert result.fully_delivered
+
+
+def test_export_only_without_targets_still_executes_and_logs(tmp_path: Path) -> None:
+    """Degenerate spec: no report, no exports. Keep the formatted default."""
+    fake = DualFakeClient()
+    result = Runner(_as_protocol(fake)).run(
+        _spec(tmp_path, exports=[], no_report=True), output_dir=tmp_path
+    )
+
+    assert [c["format_values"] for c in fake.calls] == [True]
+    assert result.runlog_path is not None and result.runlog_path.exists()
 
 
 # -- export-only runs ------------------------------------------------------

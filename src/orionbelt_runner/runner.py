@@ -46,11 +46,23 @@ class RunResult:
     # One entry per configured ``exports:`` target that wrote at least one
     # file — the resolved folder path or ``s3://bucket/prefix``.
     export_locations: list[str] = field(default_factory=list)
+    # Human-readable reasons a configured export didn't fully land: an
+    # unreachable destination, a missing optional dependency, or queries the
+    # raw re-execute couldn't supply. Kept out of ``errors`` so query failures
+    # stay distinguishable, but the CLI still exits non-zero on them — data
+    # a spec asked for and didn't get must never look like a clean run.
+    export_errors: list[str] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
+        """True when every query ran. See ``fully_delivered`` for exports."""
         return not self.errors
+
+    @property
+    def fully_delivered(self) -> bool:
+        """True when every query ran *and* every configured export landed."""
+        return not self.errors and not self.export_errors
 
 
 class Runner:
@@ -72,10 +84,14 @@ class Runner:
         model_id: str | None = spec.obsl.model_id
         results: dict[str, ExecuteResult] = {}
         # Parquet / Arrow are typed formats, so they need the unformatted
-        # result. Fetched with a second execute per query (format_values=false)
-        # only when such a target is configured — the report keeps using the
-        # formatted run so its cells stay OBSL-authoritative.
+        # result; the report and TSV want OBSL's locale-formatted cells. Only
+        # fetch both when both are actually consumed — an export-only run with
+        # nothing but typed targets executes each query once, in raw mode.
         needs_raw = any(t.needs_raw_values for t in spec.exports)
+        needs_formatted = spec.renders_report or any(t.format == "tsv" for t in spec.exports)
+        # Nothing consumes rows (no report, no exports): the run log still
+        # wants a result, so keep the formatted call as the default.
+        format_first = needs_formatted or not needs_raw
         raw_results: dict[str, ExecuteResult] = {}
         errors: dict[str, str] = {}
         query_entries: list[QueryLogEntry] = []
@@ -103,8 +119,10 @@ class Runner:
                         dialect=dialect,
                         model_id=model_id,
                         session_id=session_id,
-                        format_values=True,
-                        locale=spec.obsl.locale,
+                        format_values=format_first,
+                        # Locale only shapes formatted cells — irrelevant to a
+                        # raw run, where OBSL returns native JSON values.
+                        locale=spec.obsl.locale if format_first else None,
                         timezone=spec.obsl.timezone,
                     )
                     duration_ms = (time.monotonic_ns() - t0) / 1e6
@@ -120,14 +138,18 @@ class Runner:
                     )
                     log.info("query_done", name=q.name, rows=len(result.rows))
                     if needs_raw:
-                        self._fetch_raw(
-                            q,
-                            spec,
-                            dialect=dialect,
-                            model_id=model_id,
-                            session_id=session_id,
-                            into=raw_results,
-                        )
+                        if format_first:
+                            self._fetch_raw(
+                                q,
+                                spec,
+                                dialect=dialect,
+                                model_id=model_id,
+                                session_id=session_id,
+                                into=raw_results,
+                            )
+                        else:
+                            # The single execute above already ran raw.
+                            raw_results[q.name] = result
                 except Exception as exc:  # noqa: BLE001 — surface anything the client raises
                     duration_ms = (time.monotonic_ns() - t0) / 1e6
                     msg = f"{type(exc).__name__}: {exc}"
@@ -157,6 +179,7 @@ class Runner:
         report_path: Path | None = None
         exports_dir: Path | None = None
         export_locations: list[str] = []
+        export_errors: list[str] = []
         if results and not errors:
             if spec.renders_report:
                 report_path = self._render_report(
@@ -189,6 +212,7 @@ class Runner:
                     raw_results,
                     ctx=ctx,
                     output_dir=output_dir,
+                    errors=export_errors,
                 )
 
         runlog_path = self._write_runlog(
@@ -217,6 +241,7 @@ class Runner:
             runlog_path=runlog_path,
             exports_dir=exports_dir,
             export_locations=export_locations,
+            export_errors=export_errors,
             errors=errors,
         )
 
@@ -266,6 +291,7 @@ class Runner:
         *,
         ctx: dict[str, Any],
         output_dir: Path | None,
+        errors: list[str],
     ) -> list[str]:
         """Write every configured ``exports:`` target; return their locations.
 
@@ -273,8 +299,10 @@ class Runner:
         (the ``format_values=false`` run), TSV from the formatted ``results``
         so it mirrors the report.
 
-        Like the sibling-TSV shortcut, a failing target is logged and skipped —
-        an unreachable bucket must not discard a report that already rendered.
+        A failing target is logged, appended to ``errors``, and skipped — an
+        unreachable bucket must not discard a report that already rendered.
+        The caller turns a non-empty ``errors`` into a non-zero exit, so a job
+        whose data never landed can't look like a clean run.
         """
         locations: list[str] = []
         for target in targets:
@@ -294,17 +322,24 @@ class Runner:
                     sink.write(safe_export_filename(name, extension=extension), body)
                     written += 1
             except Exception as exc:  # noqa: BLE001 — never let exports mask the real run
+                detail = f"{type(exc).__name__}: {exc}"
                 log.warning(
                     "export_target_failed",
                     uri=target.uri,
                     format=target.format,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=detail,
                 )
+                errors.append(f"export {target.format} → {target.uri} failed: {detail}")
                 continue
 
             skipped = sorted(set(results) - set(source))
             if skipped:
                 log.warning("export_queries_skipped", uri=sink.location, queries=skipped)
+                errors.append(
+                    f"export {target.format} → {sink.location} is missing "
+                    f"{len(skipped)} quer{'y' if len(skipped) == 1 else 'ies'} "
+                    f"({', '.join(skipped)}): the raw re-execute failed"
+                )
             if written:
                 locations.append(sink.location)
             log.info(
