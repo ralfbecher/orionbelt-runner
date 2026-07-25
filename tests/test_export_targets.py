@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
-from orionbelt_runner.client import ExecuteResult, ObslClient
+from orionbelt_runner.client import ArrowResult, ExecuteResult, ObslClient
 from orionbelt_runner.exports import MissingArrowDependencyError
 from orionbelt_runner.runner import Runner
 from orionbelt_runner.spec import ExportTarget, ObslSpec, QuerySpec, ReportSpec, RunSpec
@@ -42,16 +43,31 @@ RAW = ExecuteResult(
 )
 
 
-class DualFakeClient(FakeObslClient):
-    """Returns formatted or raw rows depending on ``format_values``.
+TYPED_TABLE = pa.table(
+    {
+        "Country": pa.array(["DE", "US"]),
+        # What the Arrow transport delivers for a governed DECIMAL measure —
+        # the exact type, which no amount of JSON inference can recover.
+        "Revenue": pa.array([Decimal("5000.50"), Decimal("7345.25")], pa.decimal128(18, 2)),
+        "As Of": pa.array([0, 86_400_000_000], pa.timestamp("us")),
+    }
+)
 
-    Mirrors OBSL: the same query yields display strings with
-    ``format_values=true`` and native values with ``format_values=false``.
+
+class DualFakeClient(FakeObslClient):
+    """Mirrors OBSL across both transports.
+
+    ``execute`` yields locale-formatted display strings (what the report
+    renders); ``execute_arrow`` yields the typed Arrow table (what Parquet /
+    Arrow exports write). ``arrow_transport=False`` simulates a deployment that
+    ignores ``?format=arrow`` and answers JSON, exercising the inference
+    fallback.
     """
 
-    def __init__(self, *, raw_error: Exception | None = None) -> None:
+    def __init__(self, *, raw_error: Exception | None = None, arrow_transport: bool = True) -> None:
         super().__init__({"default": FORMATTED})
         self._raw_error = raw_error
+        self._arrow_transport = arrow_transport
 
     def execute(self, query: dict[str, Any], **kwargs: Any) -> ExecuteResult:
         super().execute(query, **kwargs)
@@ -60,6 +76,16 @@ class DualFakeClient(FakeObslClient):
         if self._raw_error is not None:
             raise self._raw_error
         return RAW
+
+    def execute_arrow(self, query: dict[str, Any], **kwargs: Any) -> ArrowResult:
+        # Record it the way the JSON path records a raw call, so tests can
+        # assert the execute pattern per query in one list.
+        self.calls.append({**kwargs, "query": query, "format_values": False, "transport": "arrow"})
+        if self._raw_error is not None:
+            raise self._raw_error
+        if not self._arrow_transport:
+            return ArrowResult(meta=RAW)
+        return ArrowResult(meta=RAW.model_copy(update={"rows": []}), table=TYPED_TABLE)
 
 
 def _as_protocol(client: FakeObslClient) -> ObslClient:
@@ -88,7 +114,7 @@ def _spec(
 # -- parquet / arrow targets ----------------------------------------------
 
 
-def test_parquet_target_writes_typed_files_from_a_raw_re_execute(tmp_path: Path) -> None:
+def test_parquet_target_writes_the_servers_typed_table(tmp_path: Path) -> None:
     fake = DualFakeClient()
     spec = _spec(tmp_path, exports=[ExportTarget(format="parquet", uri=str(tmp_path / "out"))])
 
@@ -100,13 +126,28 @@ def test_parquet_target_writes_typed_files_from_a_raw_re_execute(tmp_path: Path)
     assert written.exists()
 
     table = pq.read_table(written)
-    # Native types, not the report's locale-formatted strings.
+    # Straight from the Arrow transport: the server's own types, including the
+    # exact DECIMAL that JSON inference could only have guessed as string.
+    assert table.schema.field("Revenue").type == pa.decimal128(18, 2)
+    assert table.schema.field("As Of").type == pa.timestamp("us")
+    assert table.column("Revenue").to_pylist() == [Decimal("5000.50"), Decimal("7345.25")]
+
+    # One formatted execute (report) + one Arrow execute (export) per query.
+    assert [c["format_values"] for c in fake.calls] == [True, False]
+    assert fake.calls[1]["transport"] == "arrow"
+
+
+def test_parquet_falls_back_to_inference_when_the_server_lacks_arrow(tmp_path: Path) -> None:
+    """A deployment that ignores ?format=arrow still gets typed columns."""
+    fake = DualFakeClient(arrow_transport=False)
+    spec = _spec(tmp_path, exports=[ExportTarget(format="parquet", uri=str(tmp_path / "out"))])
+
+    Runner(_as_protocol(fake)).run(spec)
+
+    table = pq.read_table(tmp_path / "out" / "by_country.parquet")
+    # Inferred from JSON scalars: float rather than decimal, but still typed.
     assert table.schema.field("Revenue").type == pa.float64()
     assert table.schema.field("As Of").type == pa.timestamp("us")
-    assert table.column("Revenue").to_pylist() == [5000.5, 7345.25]
-
-    # One formatted execute (report) + one raw execute (export) per query.
-    assert [c["format_values"] for c in fake.calls] == [True, False]
 
 
 def test_arrow_target_writes_ipc_files(tmp_path: Path) -> None:
@@ -279,11 +320,12 @@ def test_export_only_typed_targets_execute_each_query_once(tmp_path: Path) -> No
     result = Runner(_as_protocol(fake)).run(spec, output_dir=tmp_path)
 
     assert [c["format_values"] for c in fake.calls] == [False]
-    # Locale only shapes formatted cells — no point sending it on a raw run.
-    assert fake.calls[0]["locale"] is None
+    # The Arrow transport is raw by definition and takes no locale at all.
+    assert fake.calls[0]["transport"] == "arrow"
+    assert "locale" not in fake.calls[0]
     assert result.fully_delivered
     table = pq.read_table(tmp_path / "p" / "by_country.parquet")
-    assert table.schema.field("Revenue").type == pa.float64()
+    assert table.schema.field("Revenue").type == pa.decimal128(18, 2)
 
 
 def test_export_only_with_a_tsv_target_still_needs_both_runs(tmp_path: Path) -> None:
@@ -302,8 +344,8 @@ def test_export_only_with_a_tsv_target_still_needs_both_runs(tmp_path: Path) -> 
     assert [c["format_values"] for c in fake.calls] == [True, False]
     assert "5.000,50 €" in (tmp_path / "t" / "by_country.tsv").read_text(encoding="utf-8")
     assert pq.read_table(tmp_path / "p" / "by_country.parquet").column("Revenue").to_pylist() == [
-        5000.5,
-        7345.25,
+        Decimal("5000.50"),
+        Decimal("7345.25"),
     ]
 
 

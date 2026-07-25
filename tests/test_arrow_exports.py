@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from orionbelt_runner.client import ExecuteResult
+from orionbelt_runner.client import ArrowResult, ExecuteResult
 from orionbelt_runner.exports import (
     build_arrow_table,
     render_arrow_ipc,
     render_export,
     render_parquet,
     safe_export_filename,
+    to_arrow_table,
 )
 from orionbelt_runner.sinks import LocalSink, S3Sink, open_sink
 from orionbelt_runner.spec import ExportTarget
@@ -54,6 +56,80 @@ def test_build_arrow_table_infers_native_types() -> None:
     assert schema["revenue"] == pa.float64()
     assert schema["as_of"] == pa.timestamp("us")
     assert table.column("revenue").to_pylist() == [5000.5, 7345.25]
+
+
+def test_build_arrow_table_maps_obsl_decimal_hint_to_decimal128() -> None:
+    """OBSL sends DECIMAL as exact strings; they must not land as text."""
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "Revenue", "type": "decimal(18, 2)"}],
+        rows=[["5000.50"], ["7345.25"], [None]],
+        row_count=3,
+    )
+    table = build_arrow_table(result)
+    assert table.schema.field("Revenue").type == pa.decimal128(18, 2)
+    assert table.column("Revenue").to_pylist() == [
+        Decimal("5000.50"),
+        Decimal("7345.25"),
+        None,
+    ]
+
+
+def test_build_arrow_table_uses_decimal256_beyond_38_digits() -> None:
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "Huge", "type": "decimal(40, 4)"}],
+        rows=[["12345678901234567890123456789012.1234"]],
+        row_count=1,
+    )
+    table = build_arrow_table(result)
+    assert table.schema.field("Huge").type == pa.decimal256(40, 4)
+    assert table.column("Huge").to_pylist() == [Decimal("12345678901234567890123456789012.1234")]
+
+
+def test_build_arrow_table_decimal_without_scale() -> None:
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "Count", "type": "decimal(9)"}],
+        rows=[["42"]],
+        row_count=1,
+    )
+    assert build_arrow_table(result).schema.field("Count").type == pa.decimal128(9, 0)
+
+
+def test_build_arrow_table_keeps_values_when_a_decimal_wont_fit() -> None:
+    """A value too wide for the declared precision keeps the data, not the type."""
+    result = ExecuteResult(
+        sql="SELECT 1",
+        dialect="postgres",
+        columns=[{"name": "Revenue", "type": "decimal(4, 2)"}],
+        rows=[["999999999.99"]],
+        row_count=1,
+    )
+    table = build_arrow_table(result)
+    assert table.schema.field("Revenue").type == pa.string()
+    assert table.column("Revenue").to_pylist() == ["999999999.99"]
+
+
+def test_to_arrow_table_passes_the_transport_table_through() -> None:
+    """An ArrowResult from format=arrow must never be re-inferred."""
+    table = pa.table({"Revenue": pa.array([Decimal("1.50")], pa.decimal128(12, 2))})
+    passed = to_arrow_table(ArrowResult(meta=_result(), table=table))
+    assert passed is table
+
+
+def test_to_arrow_table_infers_when_the_server_sent_json() -> None:
+    inferred = to_arrow_table(ArrowResult(meta=_result()))
+    assert inferred.schema.field("revenue").type == pa.float64()
+
+
+def test_render_export_refuses_tsv_from_the_arrow_transport() -> None:
+    """TSV mirrors formatted cells, which the raw transport doesn't carry."""
+    with pytest.raises(TypeError, match="formatted rows"):
+        render_export(ArrowResult(meta=_result()), fmt="tsv")
 
 
 def test_build_arrow_table_keeps_nulls() -> None:

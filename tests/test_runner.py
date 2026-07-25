@@ -9,6 +9,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from orionbelt_runner.client import (
+    ArrowResult,
     ExecuteResult,
     ExplainJoin,
     ExplainPlan,
@@ -125,6 +126,31 @@ class FakeObslClient:
         # query's ``__test_name`` marker (test-only convention).
         name = query.get("__test_name", "default")
         return self._results[name]
+
+    def execute_arrow(
+        self,
+        query: dict[str, Any],
+        *,
+        dialect: str = "postgres",
+        model_id: str | None = None,
+        session_id: str | None = None,
+        timezone: str | None = None,
+    ) -> ArrowResult:
+        """Answer the Arrow transport with JSON rows (``table=None``).
+
+        Mirrors an OBSL deployment that doesn't know ``?format=arrow``, so the
+        default fake keeps exercising the client-side inference fallback. Tests
+        that care about the typed path build their own table.
+        """
+        result = self.execute(
+            query,
+            dialect=dialect,
+            model_id=model_id,
+            session_id=session_id,
+            format_values=False,
+            timezone=timezone,
+        )
+        return ArrowResult(meta=result)
 
 
 def _make_spec(tmp_path: Path) -> RunSpec:

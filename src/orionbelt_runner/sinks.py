@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 import structlog
 
-from orionbelt_runner.exports import MissingArrowDependencyError
+from orionbelt_runner.arrow_support import MissingArrowDependencyError
 
 log = structlog.get_logger("orionbelt_runner.sinks")
 
