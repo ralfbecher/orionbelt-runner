@@ -39,7 +39,7 @@ src/orionbelt_runner/
 
 ```
 tests/
-├── obsl_stub.py           # StubObsl — OBSL 2.23-shaped responses (the contract fixture)
+├── obsl_stub.py           # StubObsl — OBSL 2.25-shaped responses (the contract fixture)
 ├── conftest.py            # obsl_stub / stub_client / stub_server fixtures
 ├── test_obsl_contract.py  # the runner against those responses, end to end
 └── test_*.py              # unit tests, mostly against a hand-rolled ObslClient fake
@@ -74,7 +74,7 @@ When OBSL's contract changes, update `obsl_stub.py` **first** and let the failur
 
 ## OBSL version compatibility
 
-Each runner minor line declares the OBSL minor series it supports: **0.8.x ↔ OBSL 2.23.x**. (The two version numbers don't advance together — a runner minor can ship features of its own against an unchanged OBSL line, as 0.8.0 did.) `HttpObslClient.preflight()` calls the unauthenticated `GET /health` (which returns the OBSL release `version` and the active `auth_mode`) before any query and raises `ObslVersionError` if the server is outside the supported line, or `ObslPreflightError` if the server enforces `AUTH_MODE=api_key` but no key was configured. The CLI runs preflight automatically (skippable with `--skip-preflight`). The pin lives in `client.py` as `SUPPORTED_OBSL_MAJOR` / `SUPPORTED_OBSL_MINOR` — bump them whenever the runner adopts a new OBSL minor series, and take a runner minor bump at the same time so the supported pairing is readable from the version alone.
+Each runner minor line declares the OBSL minor series it supports: **0.9.x ↔ OBSL 2.25.x**. (The two version numbers don't advance together — a runner minor can ship features of its own against an unchanged OBSL line, as 0.8.0 did.) `HttpObslClient.preflight()` calls the unauthenticated `GET /health` (which returns the OBSL release `version` and the active `auth_mode`) before any query and raises `ObslVersionError` if the server is outside the supported line, or `ObslPreflightError` if the server enforces `AUTH_MODE=api_key` but no key was configured. The CLI runs preflight automatically (skippable with `--skip-preflight`). The pin lives in `client.py` as `SUPPORTED_OBSL_MAJOR` / `SUPPORTED_OBSL_MINOR` — bump them whenever the runner adopts a new OBSL minor series, and take a runner minor bump at the same time so the supported pairing is readable from the version alone.
 
 Note: `GET /v1/settings` also exposes `version` (release) plus `api_version` (the REST prefix, currently `"v1"` — *not* a semver). The runner still reads `settings()` mid-run to capture `version` / `api_version` into the run log, but the version *gate* is the `/health` preflight.
 

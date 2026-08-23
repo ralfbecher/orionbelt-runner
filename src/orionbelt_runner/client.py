@@ -32,12 +32,12 @@ DEFAULT_API_KEY_HEADER = "X-API-Key"
 # Accept too — the server negotiates on either the parameter or the header.
 ARROW_RESULT_MEDIA_TYPE = "application/vnd.orionbelt.result+arrow"
 
-# This runner's 0.8.x line tracks the OBSL 2.23 minor series — the API surface
+# This runner's 0.9.x line tracks the OBSL 2.25 minor series — the API surface
 # (unified auth, the endpoints used here, and the JSON-Schema ingestion boundary
 # added in 2.16) is pinned to that release. Bump these in lockstep with the
 # runner's own minor version.
 SUPPORTED_OBSL_MAJOR = 2
-SUPPORTED_OBSL_MINOR = 23
+SUPPORTED_OBSL_MINOR = 25
 
 _SEMVER_RE = re.compile(r"\s*v?(\d+)\.(\d+)(?:\.(\d+))?")
 
@@ -406,7 +406,7 @@ class HttpObslClient:
         Calls the unauthenticated ``/health`` endpoint (which reports the OBSL
         release version and the active auth mode) and then verifies:
 
-        * the server version is in the supported ``2.23.x`` line, and
+        * the server version is in the supported ``2.25.x`` line, and
         * a key is configured when the server enforces ``AUTH_MODE=api_key``.
 
         Returns the ``/health`` payload. Raises :class:`ObslVersionError` or

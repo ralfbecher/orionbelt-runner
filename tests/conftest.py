@@ -13,7 +13,7 @@ from tests.obsl_stub import StubObsl, serve
 
 @pytest.fixture
 def obsl_stub() -> StubObsl:
-    """A stub OBSL answering 2.23-shaped payloads. Configure fields per test."""
+    """A stub OBSL answering 2.25-shaped payloads. Configure fields per test."""
     return StubObsl()
 
 

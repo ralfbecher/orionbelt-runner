@@ -1,4 +1,4 @@
-"""Contract tests: the runner against 2.23-shaped OBSL responses.
+"""Contract tests: the runner against 2.25-shaped OBSL responses.
 
 These cover the failure mode that hand-written fixtures can't — the runner's
 models disagreeing with what OBSL actually sends. Each test here would have
@@ -68,7 +68,7 @@ def test_model_load_parses_structured_warnings(stub_client: HttpObslClient) -> N
 
 
 def test_preflight_accepts_the_supported_line(stub_client: HttpObslClient) -> None:
-    assert stub_client.check_compatibility()["version"] == "2.23.1"
+    assert stub_client.check_compatibility()["version"] == "2.25.1"
 
 
 def test_execute_arrow_gets_the_servers_own_types(stub_client: HttpObslClient) -> None:

@@ -6,7 +6,7 @@
   "definitions": {
     "customExtension": {
       "type": "object",
-      "description": "Vendor-keyed extension data — opaque to OrionBelt",
+      "description": "Vendor-keyed extension data \u2014 opaque to OrionBelt",
       "properties": {
         "vendor": {
           "type": "string",
@@ -94,7 +94,7 @@
         },
         "refresh": {
           "type": "object",
-          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md §5.",
+          "description": "Freshness contract for the physical table this dataObject maps to. Drives result-cache TTL composition and heartbeat invalidation. See PLAN_freshness_driven_cache.md \u00a75.",
           "properties": {
             "mode": {
               "type": "string",
@@ -126,13 +126,27 @@
             "mode"
           ],
           "additionalProperties": false
+        },
+        "nestedIn": {
+          "$ref": "#/definitions/nestedSource"
         }
       },
       "required": [
-        "code",
         "columns"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "required": [
+            "nestedIn"
+          ]
+        }
+      ]
     },
     "dataType": {
       "description": "OrionBelt internal Data Type",
@@ -163,7 +177,7 @@
       ]
     },
     "numClass": {
-      "description": "Numeric classification hint for LLMs: categorical (IDs/codes — group/filter only), additive (sum-safe — amounts, quantities), non_additive (rates, %, ratios — don't assume SUM)",
+      "description": "Numeric classification hint for LLMs: categorical (IDs/codes \u2014 group/filter only), additive (sum-safe \u2014 amounts, quantities), non_additive (rates, %, ratios \u2014 don't assume SUM)",
       "enum": [
         "categorical",
         "additive",
@@ -216,7 +230,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``code`` becomes optional when ``expression`` is set. Note: SQL syntax is dialect-leaky — pin ``settings.defaultDialect`` if your expression uses vendor-specific functions."
+          "description": "When set, the column is computed from an inline SQL expression instead of mapping to a physical column. ``{name}`` placeholders refer to other columns of the same data object (by their label) and are substituted with the referenced column's physical code, table-qualified at codegen. ``{[Data Object].[Column]}`` references a column of another data object, which the compiler joins into any query reading this column \u2014 that is how a column-to-column comparison across data objects is expressed. ``code`` becomes optional when ``expression`` is set. Function calls are portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), whose entries OBSL renders per dialect and whose semantics it pins: ``concat`` propagates NULL, ``length`` counts characters, ``position`` takes the needle first. Calling one with the wrong number of arguments is rejected with ``WRONG_FUNCTION_ARITY``. A function outside the catalog is emitted verbatim, so the model then only runs on engines that have it; its arity and meaning stay the engine's business, but the call is reported as a ``NON_PORTABLE_FUNCTION`` warning, or an error when ``settings.expressionMode`` is ``portable``."
         },
         "synonyms": {
           "type": "array",
@@ -297,6 +311,11 @@
         "pathName": {
           "type": "string",
           "description": "Unique name for this join path within the (source, target) pair. Required when secondary is true. Used in queries via usePathNames to select this join."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether a row without a match on the other side should survive the join. Joins compile to LEFT JOIN by default; set this when the foreign key is mandatory and an unmatched row is meaningless, and the join becomes an INNER JOIN. Distinct from joinType, which is a cardinality and says nothing about optionality. Stating it here rather than filtering per query matters because the equivalent filter is not portable: 'WHERE right.key IS NOT NULL' silently keeps every row on ClickHouse, where an unmatched right-side column comes back as the type default rather than NULL.",
+          "default": false
         }
       },
       "required": [
@@ -350,7 +369,7 @@
       ]
     },
     "staticFilterOperator": {
-      "description": "Filter operator for static model filters — supports both OBML and SQL-style naming",
+      "description": "Filter operator for static model filters \u2014 supports both OBML and SQL-style naming",
       "enum": [
         "equals",
         "notequals",
@@ -540,7 +559,7 @@
     },
     "grainOverride": {
       "type": "object",
-      "description": "Grain override — controls aggregation grain independently from query dimensions",
+      "description": "Grain override \u2014 controls aggregation grain independently from query dimensions",
       "properties": {
         "mode": {
           "$ref": "#/definitions/grainMode",
@@ -563,7 +582,7 @@
         },
         "keepOnly": {
           "type": "array",
-          "description": "With FIXED: adaptive grain = keepOnly ∩ query_dims. Dimensions from this list present in the query.",
+          "description": "With FIXED: adaptive grain = keepOnly \u2229 query_dims. Dimensions from this list present in the query.",
           "items": {
             "type": "string"
           }
@@ -602,7 +621,7 @@
     },
     "filterContext": {
       "type": "object",
-      "description": "Filter context override — controls which query WHERE filters apply to this measure",
+      "description": "Filter context override \u2014 controls which query WHERE filters apply to this measure",
       "properties": {
         "mode": {
           "$ref": "#/definitions/filterContextMode",
@@ -611,7 +630,7 @@
         },
         "exclude": {
           "type": "array",
-          "description": "Field names — query filters referencing these fields are removed (RELATIVE mode only)",
+          "description": "Field names \u2014 query filters referencing these fields are removed (RELATIVE mode only)",
           "items": {
             "type": "string"
           }
@@ -710,17 +729,29 @@
           "type": "boolean",
           "description": "will use the total value of the measure"
         },
+        "defaultValue": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "Value to report when the aggregate has nothing to add up. An aggregate over no rows is NULL in standard SQL, which a filtered measure reaches routinely, and engines disagree: ClickHouse returns 0 over an empty row set where Postgres, DuckDB and the rest return NULL. Setting this pins the value on every dialect (emitted as COALESCE around the aggregate); leaving it unset keeps the SQL-standard NULL. Same slot as a metric's defaultValue."
+        },
+        "anchor": {
+          "type": "string",
+          "description": "data object whose grain the expression is evaluated at, for an expression reading independent facts. The other facts are aggregated to the key they share with the anchor and joined many-to-one, so nothing fans out. May name one of the facts the expression reads, or a data object all of them join to. Optional: with no anchor the facts are conformed to the single data object they all join to (reported as CONFORMED_GRAIN_ASSUMED), and sharing several raises ANCHOR_REQUIRED_AMBIGUOUS_KEY, since conforming at each gives a different answer. The choice changes AVG/MIN/MAX, though not SUM"
+        },
         "grain": {
           "$ref": "#/definitions/grainOverride",
-          "description": "Grain override — controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
+          "description": "Grain override \u2014 controls aggregation grain independently from query dimensions. Mutually exclusive with 'total'."
         },
         "filterContext": {
           "$ref": "#/definitions/filterContext",
-          "description": "Filter context override — controls which query WHERE filters apply to this measure. Requires CTE isolation."
+          "description": "Filter context override \u2014 controls which query WHERE filters apply to this measure. Requires CTE isolation."
         },
         "expression": {
           "type": "string",
-          "description": "template string with {[DataObject].[Column]} placeholders for measure expression"
+          "description": "Template string with {[DataObject].[Column]} placeholders for a measure expression. Function calls follow the same rule as a computed column's: portable when the function is in OBSL's scalar-function catalog (``GET /v1/reference/functions``), and emitted verbatim otherwise, with a ``NON_PORTABLE_FUNCTION`` warning that ``settings.expressionMode: portable`` turns into an error."
         },
         "description": {
           "type": "string",
@@ -815,7 +846,7 @@
     },
     "periodOverPeriod": {
       "type": "object",
-      "description": "Period-over-period configuration — compares a measure against a prior time period",
+      "description": "Period-over-period configuration \u2014 compares a measure against a prior time period",
       "properties": {
         "timeDimension": {
           "type": "string",
@@ -863,7 +894,7 @@
         },
         "expression": {
           "type": "string",
-          "description": "Template string with {[Measure Name]} placeholders (required for derived and period_over_period metrics)"
+          "description": "Template string with {[Measure Name]} placeholders (required for derived and period_over_period metrics). A placeholder names a measure, another derived metric (expanded in place, at any depth), or a window metric. Referencing a cumulative or period-over-period metric is rejected with UNSUPPORTED_METRIC_REF: those are computed by their own wrapper and cannot be nested."
         },
         "measure": {
           "type": "string",
@@ -1041,6 +1072,25 @@
         }
       ],
       "additionalProperties": false
+    },
+    "nestedSource": {
+      "type": "object",
+      "description": "Take this object's rows by unnesting an array column on a parent object rather than from a table of its own. The correlation is containment, not a key: an unnest pairs each parent row with the elements of its own array.",
+      "properties": {
+        "dataObject": {
+          "type": "string",
+          "description": "The parent data object whose array column supplies these rows"
+        },
+        "column": {
+          "type": "string",
+          "description": "The parent's array column. A dotted path addresses an array nested inside a struct, such as x_Project.Ancestors"
+        }
+      },
+      "required": [
+        "dataObject",
+        "column"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -1173,7 +1223,7 @@
     },
     "examples": {
       "type": "array",
-      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md §5.",
+      "description": "Canonical example queries authored alongside the model. Surfaced via the /examples endpoints so agents can discover what kinds of questions the model is designed to answer. See PLAN_agent_api_improvements.md \u00a75.",
       "items": {
         "type": "object",
         "properties": {
@@ -1236,7 +1286,7 @@
         },
         "defaultDialect": {
           "type": "string",
-          "description": "Default SQL dialect for queries that omit the 'dialect' field. Resolution order at request time: explicit dialect → model.settings.defaultDialect → DB_VENDOR env. Must be one of the registered OrionBelt dialects.",
+          "description": "Default SQL dialect for queries that omit the 'dialect' field. Resolution order at request time: explicit dialect \u2192 model.settings.defaultDialect \u2192 DB_VENDOR env. Must be one of the registered OrionBelt dialects.",
           "enum": [
             "bigquery",
             "clickhouse",
@@ -1247,6 +1297,28 @@
             "postgres",
             "snowflake"
           ]
+        },
+        "expressionMode": {
+          "type": "string",
+          "enum": [
+            "permissive",
+            "portable"
+          ],
+          "description": "How function calls in expressions are held to the portable function catalog (GET /v1/reference/functions). 'permissive' (default) emits a call the catalog does not carry as written and warns with NON_PORTABLE_FUNCTION, keeping vendor SQL available; 'portable' rejects it, so a model that has to run on any dialect cannot acquire a dependency on one engine's SQL by accident.",
+          "default": "permissive"
+        },
+        "queryTimezone": {
+          "type": "string",
+          "description": "IANA zone the model's timestamps are bucketed and reported in (e.g. Europe/Zagreb). When set, a timestamp column is converted to it in the generated SQL, so which day or week a row falls in is the model's decision rather than the warehouse session's. A naive timestamp column is first read as defaultTimezone, which is what that setting states it means; a timestamp_tz column already carries a zone and needs no such hint. Date and time columns are never converted."
+        },
+        "weekStart": {
+          "type": "string",
+          "enum": [
+            "monday",
+            "sunday"
+          ],
+          "description": "Which day a week begins on, for date_trunc('week', ...) and the week boundaries date_diff('week', ...) counts. ISO 8601 (monday) by default; 'sunday' for a US retail calendar. Week numbering from extract('week', ...) stays ISO either way, because a Sunday-start week number has no definition the engines agree on.",
+          "default": "monday"
         },
         "defaultLocale": {
           "type": "string",

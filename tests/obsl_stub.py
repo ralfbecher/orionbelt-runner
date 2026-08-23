@@ -1,4 +1,4 @@
-"""A stub OBSL server that answers with real 2.23-shaped payloads.
+"""A stub OBSL server that answers with real 2.25-shaped payloads.
 
 Every bug shipped in 0.8.0 was *contract drift*: the runner's models described
 OBSL's responses slightly wrong (structured warnings modelled as strings,
@@ -6,7 +6,7 @@ OBSL's responses slightly wrong (structured warnings modelled as strings,
 encoded the same misunderstanding, so nothing failed until a real server
 answered. This module exists to make that class of bug testable.
 
-The payloads here mirror OBSL 2.23's response models — ``QueryExecuteResponse``,
+The payloads here mirror OBSL 2.25's response models — ``QueryExecuteResponse``,
 ``StructuredWarning``, ``ColumnMetadata``, ``ExplainPlanResponse`` in the
 server's ``api/schemas.py``. Keep them that way: when they drift, the runner
 should fail here rather than in production.
@@ -39,7 +39,7 @@ import pyarrow as pa
 from orionbelt_runner.client import ARROW_RESULT_MEDIA_TYPE
 
 # What the runner pins to; the stub reports it from /health and /v1/settings.
-DEFAULT_OBSL_VERSION = "2.23.1"
+DEFAULT_OBSL_VERSION = "2.25.1"
 
 # A governed DECIMAL measure alongside a string dimension and a timestamp —
 # the shape that regressed in 0.8.0. OBSL reports DECIMAL columns as

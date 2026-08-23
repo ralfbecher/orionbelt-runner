@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-runner"
-version = "0.8.1"
+version = "0.9.0"
 description = "Run OrionBelt Semantic Layer query batches on a schedule and emit reports."
 license = {text = "BSL-1.1"}
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "info@ralforion.com"}]

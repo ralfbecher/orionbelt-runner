@@ -1,5 +1,5 @@
 """Tests for HttpObslClient auth wiring + error translation (OBSL >= 2.16)."""
-# The supported-version gate tracks OBSL 2.23.x (see SUPPORTED_OBSL_* in client.py).
+# The supported-version gate tracks OBSL 2.25.x (see SUPPORTED_OBSL_* in client.py).
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from orionbelt_runner.client import (
 from orionbelt_runner.spec import ObslSpec
 
 
-def _health(version: str = "2.23.0", auth_mode: str = "none") -> Callable[..., httpx.Response]:
+def _health(version: str = "2.25.0", auth_mode: str = "none") -> Callable[..., httpx.Response]:
     body = {"status": "ok", "version": version, "auth_mode": auth_mode}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -128,14 +128,14 @@ def test_non_auth_error_is_plain_http_error() -> None:
 
 def test_preflight_passes_on_supported_version() -> None:
     client = HttpObslClient("http://obsl.test")
-    _wire(client, _health(version="2.23.3"))
+    _wire(client, _health(version="2.25.3"))
     payload = client.check_compatibility()
-    assert payload["version"] == "2.23.3"
+    assert payload["version"] == "2.25.3"
 
 
 def test_preflight_rejects_too_old_version() -> None:
     client = HttpObslClient("http://obsl.test")
-    _wire(client, _health(version="2.22.0"))
+    _wire(client, _health(version="2.24.0"))
     with pytest.raises(ObslVersionError) as exc:
         client.check_compatibility()
     assert "too old" in str(exc.value)
@@ -143,7 +143,7 @@ def test_preflight_rejects_too_old_version() -> None:
 
 def test_preflight_rejects_too_new_version() -> None:
     client = HttpObslClient("http://obsl.test")
-    _wire(client, _health(version="2.24.0"))
+    _wire(client, _health(version="2.26.0"))
     with pytest.raises(ObslVersionError) as exc:
         client.check_compatibility()
     assert "newer" in str(exc.value)
