@@ -32,12 +32,30 @@ DEFAULT_API_KEY_HEADER = "X-API-Key"
 # Accept too — the server negotiates on either the parameter or the header.
 ARROW_RESULT_MEDIA_TYPE = "application/vnd.orionbelt.result+arrow"
 
-# This runner's 0.9.x line tracks the OBSL 2.25 minor series — the API surface
-# (unified auth, the endpoints used here, and the JSON-Schema ingestion boundary
-# added in 2.16) is pinned to that release. Bump these in lockstep with the
-# runner's own minor version.
-SUPPORTED_OBSL_MAJOR = 2
-SUPPORTED_OBSL_MINOR = 25
+# The OBSL release this runner is developed and tested against: a *floor*, not
+# an exact pairing. The runner calls a small, stable slice of the API (unified
+# auth, /health, the session + query endpoints, and the JSON-Schema ingestion
+# boundary added in 2.16), and OBSL's minor releases have been additive over
+# it — most of what a minor ships is authoring surface the *model* uses, which
+# the runner only forwards.
+#
+# So a newer server warns and proceeds rather than failing: the alternative
+# pinned the runner to one minor and blocked every model written against a
+# newer authoring surface until the runner cut a release of its own, with
+# --skip-preflight as the only way through, which also disabled the auth check.
+# An older server is still a hard error, because that direction really can be
+# missing an endpoint the runner calls.
+#
+# Raise this floor when the runner starts *depending* on something new, not
+# every time OBSL ships a minor.
+MINIMUM_OBSL_MAJOR = 2
+MINIMUM_OBSL_MINOR = 16
+
+# Newest OBSL minor this runner has been exercised against. Purely
+# informational — it decides the wording of the "newer than tested" warning,
+# never whether a run proceeds.
+TESTED_OBSL_MAJOR = 2
+TESTED_OBSL_MINOR = 25
 
 _SEMVER_RE = re.compile(r"\s*v?(\d+)\.(\d+)(?:\.(\d+))?")
 
@@ -406,7 +424,8 @@ class HttpObslClient:
         Calls the unauthenticated ``/health`` endpoint (which reports the OBSL
         release version and the active auth mode) and then verifies:
 
-        * the server version is in the supported ``2.25.x`` line, and
+        * the server version is at or above the supported floor (a newer
+          server warns and proceeds; an older one is an error), and
         * a key is configured when the server enforces ``AUTH_MODE=api_key``.
 
         Returns the ``/health`` payload. Raises :class:`ObslVersionError` or
@@ -427,21 +446,24 @@ class HttpObslClient:
             log.warning("obsl_version_unparsed", reported=reported)
             return
         major, minor, _patch = parsed
-        if (major, minor) == (SUPPORTED_OBSL_MAJOR, SUPPORTED_OBSL_MINOR):
-            return
-        want = f"{SUPPORTED_OBSL_MAJOR}.{SUPPORTED_OBSL_MINOR}.x"
-        if (major, minor) < (SUPPORTED_OBSL_MAJOR, SUPPORTED_OBSL_MINOR):
-            direction = f"too old — upgrade OBSL to {want}"
-        else:
-            direction = (
-                f"newer than this runner supports — upgrade orionbelt-runner "
-                f"(this is {__version__}) to a release that tracks OBSL "
-                f"{major}.{minor}.x"
+        if (major, minor) < (MINIMUM_OBSL_MAJOR, MINIMUM_OBSL_MINOR):
+            floor = f"{MINIMUM_OBSL_MAJOR}.{MINIMUM_OBSL_MINOR}"
+            raise ObslVersionError(
+                f"OBSL server reports version {reported!r}, but orionbelt-runner "
+                f"{__version__} requires OBSL {floor} or newer: too old — "
+                f"upgrade OBSL."
             )
-        raise ObslVersionError(
-            f"OBSL server reports version {reported!r}, but orionbelt-runner "
-            f"{__version__} requires OBSL {want}: {direction}."
-        )
+        if (major, minor) > (TESTED_OBSL_MAJOR, TESTED_OBSL_MINOR):
+            # Not an error. The runner uses a stable slice of the API and a
+            # newer server is expected to serve it; say so and carry on, so a
+            # model written against a newer authoring surface is not blocked
+            # behind a runner release.
+            log.warning(
+                "obsl_version_newer_than_tested",
+                reported=reported,
+                tested=f"{TESTED_OBSL_MAJOR}.{TESTED_OBSL_MINOR}.x",
+                runner=__version__,
+            )
 
     def _check_auth_mode(self, auth_mode: Any) -> None:
         if auth_mode == "api_key" and not self._has_key:

@@ -1,5 +1,6 @@
 """Tests for HttpObslClient auth wiring + error translation (OBSL >= 2.16)."""
-# The supported-version gate tracks OBSL 2.25.x (see SUPPORTED_OBSL_* in client.py).
+# The version gate is a floor (MINIMUM_OBSL_*) plus a newer-than-tested warning
+# (TESTED_OBSL_*); see client.py.
 
 from __future__ import annotations
 
@@ -133,20 +134,27 @@ def test_preflight_passes_on_supported_version() -> None:
     assert payload["version"] == "2.25.3"
 
 
-def test_preflight_rejects_too_old_version() -> None:
+def test_preflight_rejects_below_floor() -> None:
     client = HttpObslClient("http://obsl.test")
-    _wire(client, _health(version="2.24.0"))
+    _wire(client, _health(version="2.15.0"))
     with pytest.raises(ObslVersionError) as exc:
         client.check_compatibility()
     assert "too old" in str(exc.value)
 
 
-def test_preflight_rejects_too_new_version() -> None:
+def test_preflight_accepts_version_between_floor_and_tested() -> None:
+    client = HttpObslClient("http://obsl.test")
+    _wire(client, _health(version="2.23.1"))
+    assert client.check_compatibility()["version"] == "2.23.1"
+
+
+def test_preflight_accepts_newer_than_tested_version() -> None:
+    """A newer server proceeds. The exact-equality gate this replaced blocked
+    any model written against a newer authoring surface until the runner cut a
+    release of its own."""
     client = HttpObslClient("http://obsl.test")
     _wire(client, _health(version="2.26.0"))
-    with pytest.raises(ObslVersionError) as exc:
-        client.check_compatibility()
-    assert "newer" in str(exc.value)
+    assert client.check_compatibility()["version"] == "2.26.0"
 
 
 def test_422_schema_error_lists_offending_fields() -> None:

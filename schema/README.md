@@ -9,12 +9,12 @@ runtime. The runner never parses OBML models; it forwards run-specs to OBSL over
 ## Provenance
 
 - Source: `schema/obml-schema.json` in orionbelt-semantic-layer
-- OBSL version: **v2.25.1** (matches this runner's supported line, 0.9.x ↔ OBSL 2.25.x)
+- OBSL version: **v2.25.1** (the newest release this runner is tested against — see `TESTED_OBSL_MINOR` in `src/orionbelt_runner/client.py`)
 
 ## Re-syncing
 
 This is a static copy and will drift. Re-sync whenever the runner's supported OBSL
-minor line bumps (see `SUPPORTED_OBSL_MINOR` in `src/orionbelt_runner/client.py`):
+adopts a newer OBSL release (see `TESTED_OBSL_MINOR` in `src/orionbelt_runner/client.py`):
 
 ```bash
 # from the runner repo root, with the OBSL clone checked out to the matching tag

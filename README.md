@@ -157,11 +157,11 @@ ignored, so it's safe to leave set. A `401`/`403` from OBSL surfaces as an
 
 ## Compatibility & startup preflight
 
-This runner's **0.9.x** line tracks **OBSL 2.25.x**. Before running any query,
+This runner requires **OBSL 2.16 or newer** and is developed against **2.25.x**. Before running any query,
 `orionbelt-runner run` calls the unauthenticated `/health` endpoint and checks:
 
-- the server version is in the supported `2.25.x` line (older → upgrade the
-  server; newer → upgrade the runner), and
+- the server version is at or above the floor (older → error, upgrade the
+  server; newer than tested → a warning, the run proceeds), and
 - an API key is configured when the server reports `AUTH_MODE=api_key`.
 
 A failed check exits non-zero with `Preflight failed: …` before any session is
