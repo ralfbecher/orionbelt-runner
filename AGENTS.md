@@ -136,12 +136,13 @@ the point: adding a copyleft dependency should be a decision someone writes down
 not something that arrives with a Dependabot bump. When it fires, either drop the
 dependency or add an entry explaining why it is acceptable (see `certifi` and
 `pyphen` for the shape). pyphen carries a second guard: it offers a choice of
-three licenses, and choosing one is only necessary if we redistribute it — which
-nothing published does today, since the image is built `--extra arrow`. Add
-`--extra pdf` to the Dockerfile and `enforce_pyphen_election()` fails the build
-until `PYPHEN_ELECTION` records the choice. Do not pre-empt it by setting that
-value early: an election is a commitment, and it should be made when it starts to
-bind, not before. A wheel that ships no license file gets a hand-vendored
+three licenses, and choosing one only becomes necessary once we redistribute it.
+The image installs `--extra pdf`, so it does, and `PYPHEN_ELECTION` records the
+answer — **LGPL-2.1-or-later**, the arrangement for a library imported unmodified
+from `site-packages`. `enforce_pyphen_election()` keeps the two in step in both
+directions: adding the extra without an election fails the build, and if the
+image ever stops installing it, set the election back to `None` rather than
+leaving a commitment in place that nothing requires. A wheel that ships no license file gets a hand-vendored
 one in `scripts/license-overrides/`, with its provenance in the file.
 
 ## Out of scope (for now)

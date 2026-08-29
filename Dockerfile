@@ -21,14 +21,16 @@ WORKDIR /app
 # uv.lock as-is: the image gets the exact versions CI tested, and the build
 # never re-resolves (so it can't drift between builds of the same commit).
 #
-# --extra arrow bundles pyarrow: Parquet / Arrow exports and s3:// destinations
-# are a headline use case for a scheduled container, and without it those
-# targets fail at runtime with an "install the extra" error the image can't
-# act on. Costs ~120 MB. (PDF stays out — WeasyPrint needs Pango / Cairo
-# system libraries, which is an apt-layer cost, not a wheel.)
+# Both shipping extras are bundled. Without them the corresponding targets fail
+# at runtime with an "install the extra" error the image cannot act on, which is
+# a poor answer for a container whose whole job is unattended scheduled runs.
+#
+#   arrow — pyarrow, for Parquet / Arrow exports and s3:// destinations (~120 MB)
+#   pdf   — WeasyPrint, which additionally needs the Pango system libraries
+#           installed in the runtime stage below
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev --extra arrow
+    uv sync --frozen --no-install-project --no-dev --extra arrow --extra pdf
 
 # Now install the project itself. --no-editable copies the package into the
 # venv (rather than linking to /app/src), so the runtime stage needs only .venv.
@@ -40,10 +42,25 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY LICENSE ./
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable --extra arrow
+    uv sync --frozen --no-dev --no-editable --extra arrow --extra pdf
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.14-slim AS runtime
+
+# WeasyPrint draws through Pango, which is a system library rather than a wheel —
+# the reason the pdf extra used to stay out of this image. Cairo and GDK-Pixbuf
+# are deliberately absent: WeasyPrint has written PDFs itself since v53 and reads
+# images through Pillow, so the old three-library recipe is larger than needed.
+#
+# fonts-dejavu-core is not optional. With no font installed, Pango substitutes
+# nothing and text renders as empty boxes — a PDF that looks broken rather than a
+# run that fails, which is the worse of the two outcomes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 
 # Run as a non-root user; reports are written under the working dir.
 RUN useradd --create-home --uid 1000 runner

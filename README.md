@@ -129,11 +129,12 @@ docker run --rm \
 > and `OBSL_BASE_URL=http://host.docker.internal:8080` so the container can
 > reach it.
 
-The image covers markdown / HTML reports and all data exports — pyarrow ships
-in it, so Parquet / Arrow and `s3://` destinations work out of the box (mount a
-volume for local export folders, or point at a bucket and pass AWS credentials
-as env vars). PDF output (WeasyPrint + Pango / Cairo system libs) is not
-bundled — run `--extra pdf` on a host install for that.
+The image covers every output the runner produces — no extra is missing from it.
+pyarrow ships in it, so Parquet / Arrow and `s3://` destinations work out of the
+box (mount a volume for local export folders, or point at a bucket and pass AWS
+credentials as env vars), and WeasyPrint ships with the Pango system libraries
+and a DejaVu font, so `format: pdf` renders without any host setup — the part
+that is fiddly to install locally is already done here.
 
 ```bash
 docker run --rm \
@@ -319,7 +320,7 @@ report:
 
 `pdf_page_size` and `pdf_orientation` are ignored for `markdown` / `html` output. Reach for **A3** or **landscape** when a table has many columns or wide cell values that wrap awkwardly in A4 portrait — the same content, just more horizontal room.
 
-PDF requires the optional `pdf` extra (`uv sync --extra pdf`) and WeasyPrint's [system libraries](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation) — see [Install](#install). See [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) for a rendered PDF sample.
+PDF requires the optional `pdf` extra (`uv tool install "orionbelt-runner[pdf]"`) and WeasyPrint's [system libraries](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation) — see [Install](#install). Both are already present in the [Docker image](#docker), which is the least painful way to get PDF output. See [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) for a rendered PDF sample.
 
 ### Run log (YAML sidecar) — always written
 

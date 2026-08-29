@@ -111,11 +111,13 @@ LICENSE_ALIASES = {
     "GNU LESSER GENERAL PUBLIC LICENSE V2 OR LATER (LGPLV2+)": "LGPL-2.1-OR-LATER",
 }
 
-# pyphen offers a choice of three licenses (see _pyphen_note). Electing one is only
-# necessary if we redistribute it, and today nothing we publish does — the image
-# installs no `pdf` extra. Set this to "LGPL-2.1-or-later" or "MPL-1.1" the moment
-# that changes; enforce_pyphen_election() fails the build if it does not.
-PYPHEN_ELECTION: str | None = None
+# pyphen offers a choice of three licenses (see _pyphen_note), and the image ships
+# it, so one of them has to be chosen. RALFORION elects the LGPL: pyphen is used
+# unmodified as an ordinary installed package that the runner imports, which is
+# the case the LGPL is written for, and it is the election a licence audit expects
+# to see. The GPL option is never available to us — it would reach the runner's
+# own code. Set back to None only if the image stops installing the `pdf` extra.
+PYPHEN_ELECTION: str | None = "LGPL-2.1-or-later"
 
 
 def _pyphen_note() -> str:
@@ -139,11 +141,16 @@ def _pyphen_note() -> str:
             "LibreOffice hyphenation dictionaries carry their own GPL/LGPL/MPL terms."
         )
     return shape + (
-        f"Because an artifact of ours redistributes it, **RALFORION elects "
-        f"{PYPHEN_ELECTION}** and does not accept the GPL option. Pyphen is used "
-        f"unmodified as a separate installed package, so the runner remains under its "
-        f"own license. Its bundled LibreOffice hyphenation dictionaries carry their own "
-        f"GPL/LGPL/MPL terms."
+        f"The Docker image installs that extra, so it hands over a copy of pyphen and "
+        f"the choice among its three licenses becomes ours to make: **RALFORION elects "
+        f"{PYPHEN_ELECTION}** and does not accept the GPL option. Pyphen is imported "
+        f"unmodified as an ordinary installed package — replaceable in place under "
+        f"`site-packages`, never vendored into `orionbelt_runner` or statically linked "
+        f"— which is the arrangement the LGPL permits, so the runner remains under its "
+        f"own license. Do not patch pyphen in the image: modifications to it would be "
+        f"LGPL and would have to be published. Its source for the version shipped is "
+        f"the sdist on PyPI. The LibreOffice hyphenation dictionaries bundled inside it "
+        f"travel with it and carry their own GPL/LGPL/MPL terms."
     )
 
 
@@ -200,8 +207,9 @@ ships every package's terms at `/usr/share/doc/<package>/copyright`, so that
 attribution travels inside the image alongside the binaries it covers. Two points
 on the copyleft there:
 
-- Nothing GPL is *linked*. The libraries CPython binds against — glibc, libffi,
-  libssl, libsqlite3, liblzma, readline — are LGPL or permissive, and all are
+- Nothing GPL is *linked*. The libraries bound at runtime — glibc, libffi,
+  libssl, libsqlite3, liblzma, readline, and Pango, which WeasyPrint draws
+  through — are LGPL or permissive, and all are
   linked dynamically, which is the case the LGPL permits. (A Debian `copyright`
   file frequently mentions the GPL because a build script or a sibling binary in
   the same source package is GPL'd; glibc is the standard example, an LGPL
@@ -448,8 +456,46 @@ def collect(lock: dict[str, Any], image_extras: frozenset[str]) -> list[Package]
 
 
 def render(packages: list[Package], image_extras: frozenset[str]) -> str:
-    extras_phrase = ", ".join(f"`--extra {extra}`" for extra in sorted(image_extras)) or "no extras"
+    # Packages whose text had to be vendored ship none of their own, so inside the
+    # image this file is the only place their license exists. Saying so keeps the
+    # sentence above honest without hardcoding which package it is.
+    vendored = sorted(
+        package.name for package in packages if (OVERRIDE_DIR / f"{package.name}.txt").exists()
+    )
+    vendored_note = (
+        [
+            f"One exception: {', '.join(f'`{name}`' for name in vendored)} ships no",
+            "license file of its own — upstream omits it from the wheel — so inside the",
+            "image this file is the only copy of its terms. Its text is reproduced below",
+            "from the project's own repository.",
+            "",
+        ]
+        if vendored
+        else []
+    )
+
+    quoted = [f"`--extra {extra}`" for extra in sorted(image_extras)]
+    # "a and b", "a, b and c" — a bare comma join reads as a truncated list.
+    extras_phrase = (
+        " and ".join(filter(None, [", ".join(quoted[:-1])] + quoted[-1:])) or "no extras"
+    )
     in_image = sum(1 for package in packages if package.in_image)
+    everything = in_image == len(packages)
+    image_scope = "every package below" if everything else "the packages marked *yes* below"
+    # Only describe an informational set when one exists — with every extra
+    # installed there is nothing outside the image, and the paragraph would be
+    # describing an empty set.
+    outside_image: list[str] = (
+        []
+        if everything
+        else [
+            "The remaining packages are reachable only through an extra the image does",
+            "not install. They are credited here because `pip install orionbelt-runner[pdf]`",
+            "can pull them in and because a future artifact may bundle them — but no",
+            "artifact we publish redistributes them today.",
+            "",
+        ]
+    )
     lines = [
         "# Third-party notices",
         "",
@@ -467,19 +513,15 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
         "and downloads everything below from PyPI itself, so both artifacts redistribute",
         "nothing and this file is informational for them.",
         "",
-        "The **Docker image redistributes** the packages marked *yes* below. It copies a",
-        f"populated virtualenv built with {extras_phrase}, handing those packages over as",
+        f"The **Docker image redistributes** {image_scope}. It copies a populated",
+        f"virtualenv built with {extras_phrase}, handing those packages over as",
         "binaries, which is what makes their notices mandatory rather than courteous.",
         "Their license texts are present inside the image too, at",
         "`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`, alongside",
         "`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.",
         "",
-        "The remaining packages are reachable only through an extra the image does not",
-        "install. They are credited here because `pip install orionbelt-runner[pdf]` can",
-        "pull them in and because a future artifact may bundle them — but no artifact we",
-        "publish redistributes them today, which is also why pyphen below needs no",
-        "license election.",
-        "",
+        *vendored_note,
+        *outside_image,
         "The list is the dependency closure of `orionbelt-runner` plus the `arrow` and",
         "`pdf` extras, resolved from `uv.lock` for linux/CPython on Python 3.12–3.14.",
         "Development-only dependencies (pytest, ruff, mypy, respx) are excluded: they",
@@ -501,8 +543,12 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
         "",
         "## Summary",
         "",
-        f"{len(packages)} packages: {in_image} in the published image, "
-        f"{len(packages) - in_image} reachable only through an extra it does not install.",
+        (
+            f"{len(packages)} packages, all of them redistributed by the published image."
+            if everything
+            else f"{len(packages)} packages: {in_image} in the published image, "
+            f"{len(packages) - in_image} reachable only through an extra it does not install."
+        ),
         "",
         "| Package | Version | License | In image |",
         "| --- | --- | --- | --- |",

@@ -148,12 +148,22 @@ def test_platform_notice_tracks_the_dockerfile() -> None:
     assert "{{" not in rendered, "an unreplaced placeholder is left in the notice"
 
 
-def test_no_pyphen_election_is_needed_while_nothing_ships_it() -> None:
-    """Today's state: the image is `--extra arrow`, so pyphen is never ours to license."""
-    assert "pdf" not in notices.dockerfile_extras()
-    assert notices.PYPHEN_ELECTION is None
-    assert notices.enforce_pyphen_election(ships_pdf=False, election=None) == []
-    assert "No election has been made" in notices.ACKNOWLEDGED["pyphen"].note
+def test_the_election_matches_what_the_image_ships() -> None:
+    """The image installs the `pdf` extra, so the choice of pyphen licence is ours.
+
+    Both halves are asserted together on purpose: an election recorded while
+    nothing ships pyphen would be an unnecessary commitment, and shipping it
+    without one would distribute a GPL-optional package with no record of which
+    option was taken. Whichever way the Dockerfile goes, these move together.
+    """
+    ships_pdf = "pdf" in notices.dockerfile_extras()
+    assert ships_pdf
+    assert notices.PYPHEN_ELECTION == "LGPL-2.1-or-later"
+    assert notices.enforce_pyphen_election(ships_pdf, notices.PYPHEN_ELECTION) == []
+
+    note = notices.ACKNOWLEDGED["pyphen"].note
+    assert "elects LGPL-2.1-or-later" in note
+    assert "does not accept the GPL option" in note
 
 
 def test_shipping_the_pdf_extra_forces_the_election() -> None:
@@ -221,11 +231,31 @@ def test_dockerfile_extras_ignores_comments(
 
 
 def test_the_image_column_reflects_what_the_dockerfile_installs() -> None:
-    """`pdf`-only packages are credited but must not be claimed as redistributed."""
+    """The column tracks the Dockerfile's extras, not the whole noticed closure."""
     import tomllib
 
     lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
     packages = {p.name: p for p in notices.collect(lock, notices.dockerfile_extras())}
-    assert packages["pyarrow"].in_image, "the image is built --extra arrow"
-    for pdf_only in ("pyphen", "weasyprint", "pillow", "webencodings"):
-        assert not packages[pdf_only].in_image, f"{pdf_only} is not in the image"
+    # The image installs both extras today, so everything credited is shipped.
+    for shipped in ("pyarrow", "weasyprint", "pyphen", "pillow", "webencodings"):
+        assert packages[shipped].in_image, f"{shipped} is installed by the Dockerfile"
+
+    # Drop an extra and the split reappears — this is the mechanism, not the
+    # current configuration, and it is what keeps the column honest if the
+    # Dockerfile ever narrows again.
+    arrow_only = notices.distributed_closure(lock, ["arrow"])
+    assert "pyarrow" in arrow_only
+    for pdf_only in ("weasyprint", "pyphen", "pillow", "webencodings"):
+        assert pdf_only not in arrow_only
+
+
+def test_the_image_can_actually_run_what_it_installs() -> None:
+    """Shipping WeasyPrint without Pango yields an image that fails at render time.
+
+    The wheel installs cleanly with no system libraries, so nothing before this
+    point would notice: the failure only shows up when a spec asks for PDF.
+    """
+    dockerfile = notices.DOCKERFILE_PATH.read_text(encoding="utf-8")
+    if "pdf" in notices.dockerfile_extras():
+        assert "libpango-1.0-0" in dockerfile, "WeasyPrint draws through Pango"
+        assert "fonts-" in dockerfile, "with no font installed, text renders as boxes"
