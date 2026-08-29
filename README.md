@@ -9,7 +9,7 @@
 [![Version 0.9.0](https://img.shields.io/badge/version-0.9.0-purple.svg)](https://github.com/ralforion/orionbelt-runner/releases)
 [![OBSL 2.25.x](https://img.shields.io/badge/OBSL-2.25.x-9cf.svg)](https://github.com/ralforion/orionbelt-semantic-layer)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-orange.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-orange.svg)](LICENSE)
 
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?logo=pydantic&logoColor=white)](https://docs.pydantic.dev)
 [![Typer](https://img.shields.io/badge/Typer-CLI-009688.svg)](https://typer.tiangolo.com)
@@ -451,6 +451,43 @@ Copyright 2025 [RALFORION d.o.o.](https://ralforion.com)
 Licensed under the [Business Source License 1.1](LICENSE). The Licensed Work will convert to Apache License 2.0 on 2030-03-16.
 
 For commercial licensing inquiries, contact: licensing@ralforion.com
+
+### Third-party dependencies
+
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists every third-party package
+the runner can pull in — the runtime closure plus the `arrow` and `pdf` extras —
+with its license, its full license text, and whether the Docker image actually
+redistributes it.
+
+That last column matters, because the artifacts differ. The wheel contains only
+`orionbelt_runner`; the sdist adds this repository's own sources. Neither carries
+any third-party code — pip fetches it from PyPI — so for both the file is
+informational. The **image** genuinely redistributes what the Dockerfile installs
+(`--extra arrow` today, so no WeasyPrint or pyphen), and carries the same texts at
+`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/` alongside
+`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.
+
+The interpreter and the Debian base the image is built on sit below what
+`uv.lock` can see, so they are covered by a **Platform layer** section in the same
+file: CPython is PSF-2.0, the OS packages carry their terms at
+`/usr/share/doc/*/copyright` inside the image, and corresponding source stays
+retrievable from <https://snapshot.debian.org> because the base is pinned at build
+time. No GPL code is linked into or imported by the runner.
+
+Everything in the closure is permissive (MIT / BSD / Apache-2.0 / ISC / PSF) with
+two documented exceptions, `certifi` (MPL-2.0) and `pyphen` (tri-licensed, `pdf`
+extra only, and not redistributed by us — so no license election is needed) —
+both explained in that file. An
+acknowledgement is bound to the license expression that was reviewed, not to the
+package name, so a dependency that relicenses comes back through the gate.
+
+CI regenerates the notices and fails if a dependency arrives under a license
+nobody has signed off on:
+
+```bash
+uv run --no-sync python scripts/third_party_notices.py          # regenerate
+uv run --no-sync python scripts/third_party_notices.py --check  # what CI runs
+```
 
 ---
 

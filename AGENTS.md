@@ -33,6 +33,9 @@ src/orionbelt_runner/
 ├── exports.py     # Per-query export bodies: TSV / Parquet / Arrow IPC (pure)
 ├── sinks.py       # Where export bytes land: LocalSink (folder) / S3Sink (pyarrow.fs)
 └── cli.py         # Typer CLI: orionbelt-runner run / version
+
+scripts/
+└── third_party_notices.py   # regenerates / verifies THIRD-PARTY-NOTICES.md
 ```
 
 ## Testing
@@ -79,6 +82,46 @@ The runner declares an OBSL **floor**, not an exact pairing: it runs against tha
 The floor lives in `client.py` as `MINIMUM_OBSL_MAJOR` / `MINIMUM_OBSL_MINOR` — raise it only when the runner starts *depending* on something new, not every time OBSL ships a minor. `TESTED_OBSL_MAJOR` / `TESTED_OBSL_MINOR` record the newest minor exercised in CI and decide the warning wording only; bump them with the vendored schema when adopting a release. This replaced an exact-equality gate that pinned the runner to one OBSL minor and blocked any model written against a newer authoring surface until the runner cut a release of its own.
 
 Note: `GET /v1/settings` also exposes `version` (release) plus `api_version` (the REST prefix, currently `"v1"` — *not* a semver). The runner still reads `settings()` mid-run to capture `version` / `api_version` into the run log, but the version *gate* is the `/health` preflight.
+
+## Third-party licenses
+
+`THIRD-PARTY-NOTICES.md` is **generated** — edit `scripts/third_party_notices.py`,
+never the file. It derives the closure from `uv.lock` (runtime + `arrow` + `pdf`;
+`dev` is tooling the project runs, not a work it ships) and pulls each license text
+from the wheel's own `*.dist-info/licenses/`, so the notice matches what is
+installed rather than a hand-kept list.
+
+Two scopes, kept distinct because conflating them makes the file claim things that
+are not true: the *noticed* closure is everything the project can pull in, while
+the *redistributed* set is only what the Dockerfile installs, parsed live by
+`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` handled
+— this is the seam the pyphen guard hangs off, so it must not be defeated by
+reformatting a `RUN` line). Packages outside the image are still credited, marked
+`no` in the summary, and described as informational. Install a new extra in the
+image and the run fails until `NOTICED_EXTRAS` accounts for it.
+
+The **Platform layer** section of that file covers what `uv.lock` cannot see — the
+interpreter and the Debian userland the image inherits. It is prose in the
+script's `PLATFORM_SECTION`, parameterised from the Dockerfile's
+`FROM python:<version> AS runtime` line, so bumping the base image updates the
+notice instead of silently invalidating it. Change that line's shape and
+`runtime_base_image()` will fail loudly rather than emit a stale claim.
+
+CI runs it with `--check`, which fails on drift **and** on any dependency whose
+license is not permissive and not in the script's `ACKNOWLEDGED` map — where an
+entry records the exact license expression that was reviewed, so a package that
+relicenses fails rather than inheriting an approval granted to different terms. That gate is
+the point: adding a copyleft dependency should be a decision someone writes down,
+not something that arrives with a Dependabot bump. When it fires, either drop the
+dependency or add an entry explaining why it is acceptable (see `certifi` and
+`pyphen` for the shape). pyphen carries a second guard: it offers a choice of
+three licenses, and choosing one is only necessary if we redistribute it — which
+nothing published does today, since the image is built `--extra arrow`. Add
+`--extra pdf` to the Dockerfile and `enforce_pyphen_election()` fails the build
+until `PYPHEN_ELECTION` records the choice. Do not pre-empt it by setting that
+value early: an election is a commitment, and it should be made when it starts to
+bind, not before. A wheel that ships no license file gets a hand-vendored
+one in `scripts/license-overrides/`, with its provenance in the file.
 
 ## Out of scope (for now)
 
