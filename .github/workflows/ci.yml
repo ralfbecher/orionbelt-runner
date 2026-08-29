@@ -28,13 +28,22 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Lint (ruff)
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Format check (ruff)
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ scripts/
 
       - name: Type check (mypy)
-        run: uv run mypy src/
+        run: uv run mypy src/ scripts/
+
+      # Third-party attribution. The `dev` extra installs the whole redistributed
+      # closure (it pulls pyarrow and weasyprint), so this reads the same license
+      # files the Docker image ships. Fails on two things: THIRD-PARTY-NOTICES.md
+      # drifting from uv.lock, and a dependency arriving under a copyleft or
+      # unrecognised license that nobody has signed off on. --no-sync so the check
+      # sees exactly the environment installed above.
+      - name: Third-party licenses (notices + policy)
+        run: uv run --no-sync python scripts/third_party_notices.py --check
 
   # Both ends of the supported range: 3.12 is the floor in requires-python,
   # 3.14 is what the Docker image ships. Keep the top of this matrix in step

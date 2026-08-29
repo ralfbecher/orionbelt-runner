@@ -2,7 +2,8 @@
 name = "orionbelt-runner"
 version = "0.9.0"
 description = "Run OrionBelt Semantic Layer query batches on a schedule and emit reports."
-license = {text = "BSL-1.1"}
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 authors = [{name = "Ralf Becher, RALFORION d.o.o.", email = "info@ralforion.com"}]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -40,6 +41,7 @@ arrow = [
     "pyarrow>=16",
 ]
 dev = [
+    "packaging>=24.0",     # scripts/third_party_notices.py — dependency marker evaluation
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.5",

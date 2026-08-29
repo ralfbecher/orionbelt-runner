@@ -32,6 +32,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Now install the project itself. --no-editable copies the package into the
 # venv (rather than linking to /app/src), so the runtime stage needs only .venv.
+#
+# LICENSE comes along because pyproject's `license-files` resolves at build time:
+# without it here, the wheel built inside this image would carry no license file
+# and the installed dist-info would be the only one in site-packages missing one.
+# Copied after the dependency sync above so editing it can't bust that cache.
+COPY LICENSE ./
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --extra arrow
@@ -44,6 +50,12 @@ RUN useradd --create-home --uid 1000 runner
 
 # Bring over the resolved virtualenv from the build stage.
 COPY --from=build --chown=runner:runner /app/.venv /app/.venv
+
+# The image redistributes every dependency as a binary, so the attribution has to
+# travel with it. Each wheel's own license text already ships inside
+# .venv/**/dist-info/licenses/; these two put the runner's license and the
+# consolidated notices somewhere a person (or an audit) can actually find them.
+COPY --chown=runner:runner LICENSE THIRD-PARTY-NOTICES.md /app/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
