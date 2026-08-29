@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,14 @@ assert _spec is not None and _spec.loader is not None
 notices = importlib.util.module_from_spec(_spec)
 sys.modules["third_party_notices"] = notices
 _spec.loader.exec_module(notices)
+
+LOCK = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
+DEFINED_EXTRAS = notices.image_closure_extras(LOCK)
+
+
+def image_extras() -> frozenset[str]:
+    """What the repo's own Dockerfile installs, resolved the way the script does."""
+    return notices.dockerfile_extras(DEFINED_EXTRAS)
 
 
 @pytest.mark.parametrize(
@@ -156,7 +165,7 @@ def test_the_election_matches_what_the_image_ships() -> None:
     without one would distribute a GPL-optional package with no record of which
     option was taken. Whichever way the Dockerfile goes, these move together.
     """
-    ships_pdf = "pdf" in notices.dockerfile_extras()
+    ships_pdf = "pdf" in image_extras()
     assert ships_pdf
     assert notices.PYPHEN_ELECTION == "LGPL-2.1-or-later"
     assert notices.enforce_pyphen_election(ships_pdf, notices.PYPHEN_ELECTION) == []
@@ -193,7 +202,7 @@ def test_every_acknowledgement_matches_what_the_closure_declares() -> None:
     import tomllib
 
     lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
-    packages = {p.name: p for p in notices.collect(lock, notices.dockerfile_extras())}
+    packages = {p.name: p for p in notices.collect(lock, image_extras())}
     for name, acknowledgement in notices.ACKNOWLEDGED.items():
         assert packages[name].license_expression == acknowledgement.license_expression
 
@@ -214,7 +223,7 @@ def test_dockerfile_extras_survives_reformatting(
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(f"FROM python:3.14-slim AS runtime\n{run_line}\n")
     monkeypatch.setattr(notices, "DOCKERFILE_PATH", dockerfile)
-    assert "pdf" in notices.dockerfile_extras()
+    assert "pdf" in notices.dockerfile_extras(DEFINED_EXTRAS)
 
 
 def test_dockerfile_extras_ignores_comments(
@@ -227,7 +236,7 @@ def test_dockerfile_extras_ignores_comments(
         "RUN uv sync --frozen --extra arrow\n"
     )
     monkeypatch.setattr(notices, "DOCKERFILE_PATH", dockerfile)
-    assert notices.dockerfile_extras() == frozenset({"arrow"})
+    assert notices.dockerfile_extras(DEFINED_EXTRAS) == frozenset({"arrow"})
 
 
 def test_the_image_column_reflects_what_the_dockerfile_installs() -> None:
@@ -235,7 +244,7 @@ def test_the_image_column_reflects_what_the_dockerfile_installs() -> None:
     import tomllib
 
     lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
-    packages = {p.name: p for p in notices.collect(lock, notices.dockerfile_extras())}
+    packages = {p.name: p for p in notices.collect(lock, image_extras())}
     # The image installs both extras today, so everything credited is shipped.
     for shipped in ("pyarrow", "weasyprint", "pyphen", "pillow", "webencodings"):
         assert packages[shipped].in_image, f"{shipped} is installed by the Dockerfile"
@@ -256,6 +265,54 @@ def test_the_image_can_actually_run_what_it_installs() -> None:
     point would notice: the failure only shows up when a spec asks for PDF.
     """
     dockerfile = notices.DOCKERFILE_PATH.read_text(encoding="utf-8")
-    if "pdf" in notices.dockerfile_extras():
+    if "pdf" in image_extras():
         assert "libpango-1.0-0" in dockerfile, "WeasyPrint draws through Pango"
         assert "fonts-" in dockerfile, "with no font installed, text renders as boxes"
+
+
+def _extras_for(content: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> frozenset[str]:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(content)
+    monkeypatch.setattr(notices, "DOCKERFILE_PATH", dockerfile)
+    return notices.dockerfile_extras(DEFINED_EXTRAS)
+
+
+def test_all_extras_is_expanded_not_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--all-extras` installs everything, so it must not read as installing nothing.
+
+    An unrecognised flag here fails silently in the worst direction: every package
+    would be marked as not redistributed and the pyphen election skipped, while the
+    notice still reads as though it had checked.
+    """
+    extras = _extras_for("RUN uv sync --frozen --no-dev --all-extras\n", tmp_path, monkeypatch)
+    assert extras == frozenset(DEFINED_EXTRAS)
+    assert "pdf" in extras, "pyphen would ship without an election"
+
+
+def test_all_extras_honours_no_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    extras = _extras_for("RUN uv sync --all-extras --no-extra dev\n", tmp_path, monkeypatch)
+    assert extras == frozenset({"arrow", "pdf"})
+
+
+def test_no_extra_is_not_mistaken_for_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-extra pdf` excludes pdf; a looser pattern would read it as adding it."""
+    extras = _extras_for("RUN uv sync --extra arrow --no-extra pdf\n", tmp_path, monkeypatch)
+    assert extras == frozenset({"arrow"})
+
+
+def test_expanding_all_extras_surfaces_an_unaccounted_extra() -> None:
+    """`--all-extras` sweeps in `dev`, which the notice does not cover — so it fails."""
+    with pytest.raises(SystemExit, match="does not account for"):
+        notices.collect(LOCK, frozenset(DEFINED_EXTRAS))
+
+
+def test_an_unreadable_installer_is_refused_not_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switching install tooling must stop the build, not empty out the notice."""
+    with pytest.raises(SystemExit, match="cannot read extras from"):
+        _extras_for("RUN pip install '.[pdf]'\n", tmp_path, monkeypatch)

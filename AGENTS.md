@@ -115,9 +115,13 @@ installed rather than a hand-kept list.
 Two scopes, kept distinct because conflating them makes the file claim things that
 are not true: the *noticed* closure is everything the project can pull in, while
 the *redistributed* set is only what the Dockerfile installs, parsed live by
-`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` handled
-— this is the seam the pyphen guard hangs off, so it must not be defeated by
-reformatting a `RUN` line). Packages outside the image are still credited, marked
+`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` and
+`--all-extras` / `--no-extra` handled — this is the seam the pyphen guard hangs
+off, so it must not be defeated by reformatting a `RUN` line). Its dangerous
+failure is an *empty* answer rather than a wrong one: nothing would be marked as
+redistributed and the election check would not fire, while the notice still read
+as verified. So an install command it does not understand raises instead — if you
+change how the image installs, teach the parser first. Packages outside the image are still credited, marked
 `no` in the summary, and described as informational. Install a new extra in the
 image and the run fails until `NOTICED_EXTRAS` accounts for it.
 

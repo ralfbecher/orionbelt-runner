@@ -31,7 +31,7 @@ import importlib.metadata as importlib_metadata
 import re
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
@@ -587,21 +587,55 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def dockerfile_extras() -> frozenset[str]:
+# Installers this parser understands. Anything else in the Dockerfile that
+# installs the project is refused rather than ignored — see dockerfile_extras.
+_INSTALL_COMMAND = re.compile(
+    r"\b(uv sync|uv pip install|pip install|pip3 install|poetry install)\b"
+)
+
+
+def dockerfile_extras(defined_extras: Collection[str]) -> frozenset[str]:
     """The extras the Dockerfile installs — that is, what the image really contains.
 
-    This is the seam that decides which packages a published artifact redistributes
-    and whether pyphen needs an election, so it parses rather than pattern-matches:
-    comment lines are dropped, line continuations joined, and `--extra=pdf` is
-    accepted alongside `--extra pdf`. A guard defeated by reformatting a RUN line
-    would be worse than no guard, because it would still look like one.
+    This is the seam deciding which packages a published artifact redistributes and
+    whether pyphen needs an election, so it parses rather than pattern-matches:
+    comment lines are dropped, continuations joined, `--extra=pdf` accepted beside
+    `--extra pdf`, `--all-extras` expanded against what pyproject defines, and
+    `--no-extra` subtracted. A guard defeated by reformatting a RUN line would be
+    worse than no guard, because it would still look like one.
+
+    The failure mode to design against is not a wrong answer but an empty one: a
+    silent `frozenset()` would mark every package as not redistributed and skip the
+    election check, all while the file still reads as though it had been verified.
+    So an install command this parser does not understand raises instead — better a
+    build that stops on an unfamiliar line than a notice quietly describing an image
+    nobody shipped.
     """
     text = DOCKERFILE_PATH.read_text(encoding="utf-8")
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     text = re.sub(r"\\\s*\n\s*", " ", text)
+
+    unknown = {
+        match.group(1) for match in _INSTALL_COMMAND.finditer(text) if match.group(1) != "uv sync"
+    }
+    if unknown:
+        raise SystemExit(
+            f"error: the Dockerfile installs with {sorted(unknown)}, which "
+            f"{Path(__file__).name} cannot read extras from. Teach dockerfile_extras() "
+            f"that form — leaving it unparsed would silently report an image that "
+            f"redistributes nothing."
+        )
+
     extras: set[str] = set()
     for command in re.findall(r"uv sync[^\n]*", text):
-        extras.update(re.findall(r"--extra[=\s]+([A-Za-z0-9_.-]+)", command))
+        # --all-extras means every extra pyproject defines, `dev` included. Expanding
+        # it rather than special-casing is what lets the existing NOTICED_EXTRAS check
+        # object to shipping an extra this notice does not account for.
+        if re.search(r"(?<![\w-])--all-extras\b", command):
+            extras.update(defined_extras)
+        extras.update(re.findall(r"(?<![\w-])--extra[=\s]+([A-Za-z0-9_.-]+)", command))
+        for excluded in re.findall(r"(?<![\w-])--no-extra[=\s]+([A-Za-z0-9_.-]+)", command):
+            extras.discard(excluded)
     return frozenset(extras)
 
 
@@ -659,8 +693,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    image_extras = dockerfile_extras()
-    packages = collect(tomllib.loads(LOCK_PATH.read_text(encoding="utf-8")), image_extras)
+    lock = tomllib.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    image_extras = dockerfile_extras(image_closure_extras(lock))
+    packages = collect(lock, image_extras)
     rendered = render(packages, image_extras)
 
     failures = enforce_policy(packages)
