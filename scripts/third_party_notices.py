@@ -31,6 +31,7 @@ import importlib.metadata as importlib_metadata
 import re
 import sys
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
@@ -46,10 +47,12 @@ OVERRIDE_DIR = Path(__file__).resolve().parent / "license-overrides"
 
 ROOT_PACKAGE = "orionbelt-runner"
 
-# Extras that end up in something we publish. `dev` never does: pytest, ruff,
-# mypy and respx are build-time tools, and a tool you run is not a work you
-# distribute, so they carry no attribution duty and stay out of the notices.
-DISTRIBUTED_EXTRAS = ("arrow", "pdf")
+# Extras this file accounts for. Not the same question as what gets redistributed:
+# the image installs only what the Dockerfile asks for (see dockerfile_extras), and
+# packages reachable only through an extra it skips are listed as informational —
+# a user can install them, but pip fetches them from PyPI, not from us. `dev` is in
+# neither set: pytest, ruff and mypy are tools the project runs, not works it ships.
+NOTICED_EXTRAS = ("arrow", "pdf")
 
 # The published image is linux/CPython; the wheel supports every minor from
 # requires-python upward. Union the marker evaluation across those so a
@@ -109,8 +112,8 @@ LICENSE_ALIASES = {
 }
 
 # pyphen offers a choice of three licenses (see _pyphen_note). Electing one is only
-# necessary if we redistribute it, and today nothing we publish does — the image is
-# built `--extra arrow`. Set this to "LGPL-2.1-or-later" or "MPL-1.1" at the moment
+# necessary if we redistribute it, and today nothing we publish does — the image
+# installs no `pdf` extra. Set this to "LGPL-2.1-or-later" or "MPL-1.1" the moment
 # that changes; enforce_pyphen_election() fails the build if it does not.
 PYPHEN_ELECTION: str | None = None
 
@@ -124,7 +127,7 @@ def _pyphen_note() -> str:
     if PYPHEN_ELECTION is None:
         return shape + (
             "**No election has been made, because RALFORION does not redistribute "
-            "pyphen.** The published Docker image is built with `--extra arrow` and "
+            "pyphen.** The published Docker image does not install the `pdf` extra, so it "
             "contains no copy of it; someone running `pip install orionbelt-runner[pdf]` "
             "receives pyphen from PyPI directly rather than from us, which makes the "
             "choice among its three licenses theirs to make, not ours. It is listed here "
@@ -144,18 +147,34 @@ def _pyphen_note() -> str:
     )
 
 
-# Non-permissive licenses we have looked at and accepted, with the reason. A
-# package here is exempt from the policy gate; anything else non-permissive
-# fails --check until someone adds an entry (or drops the dependency).
-ACKNOWLEDGED: dict[str, str] = {
-    "certifi": (
+@dataclass(frozen=True)
+class Acknowledgement:
+    """A non-permissive license we looked at and accepted, and why.
+
+    `license_expression` is what was reviewed, verbatim. The exemption is bound to
+    it rather than to the package name: a package that relicenses — certifi moving
+    off MPL-2.0, say — must come back through the gate instead of inheriting an
+    approval granted to different terms.
+    """
+
+    license_expression: str
+    note: str
+
+
+ACKNOWLEDGED: dict[str, Acknowledgement] = {
+    "certifi": Acknowledgement(
+        "Mozilla Public License 2.0 (MPL 2.0)",
         "MPL-2.0 is file-level copyleft: it reaches the files themselves, not the "
         "program that imports them. We ship certifi unmodified as a separate "
         "installed package, so the obligation is satisfied by shipping this notice "
         "and its license text. Do not patch certifi in place — patch it and the "
-        "modified files must be published under MPL-2.0."
+        "modified files must be published under MPL-2.0.",
     ),
-    "pyphen": _pyphen_note(),
+    "pyphen": Acknowledgement(
+        "GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public "
+        "License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1)",
+        _pyphen_note(),
+    ),
 }
 
 
@@ -214,6 +233,7 @@ class Package:
     license_expression: str
     verdict: Verdict
     texts: tuple[tuple[str, str], ...]  # (filename, contents)
+    in_image: bool  # redistributed by the Docker image, vs reachable via an extra
 
 
 def runtime_base_image() -> tuple[str, str]:
@@ -248,7 +268,7 @@ def marker_applies(marker: str | None) -> bool:
     return any(parsed.evaluate(environment=env) for env in PUBLISH_ENVIRONMENTS)
 
 
-def distributed_closure(lock: dict[str, Any]) -> dict[str, str]:
+def distributed_closure(lock: dict[str, Any], extras: Sequence[str]) -> dict[str, str]:
     """Walk uv.lock from the root package to every dependency we redistribute.
 
     Returns {normalised name: version}. Extras are followed as their own edges so
@@ -274,7 +294,7 @@ def distributed_closure(lock: dict[str, Any]) -> dict[str, str]:
             if marker_applies(edge.get("marker")):
                 walk(edge["name"], tuple(edge.get("extra", ())))
 
-    walk(ROOT_PACKAGE, DISTRIBUTED_EXTRAS)
+    walk(ROOT_PACKAGE, tuple(extras))
     del found[normalize(ROOT_PACKAGE)]  # our own license is LICENSE, not a notice
     return found
 
@@ -283,6 +303,14 @@ def distributed_closure(lock: dict[str, Any]) -> dict[str, str]:
 # bucket, and it has to survive both "GPL-3.0-only" and a classifier's "(GPLv2+)".
 _STRONG_COPYLEFT = re.compile(r"(?<![A-Z])A?GPL")
 _WEAK_COPYLEFT = re.compile(r"(?<![A-Z])(LGPL|MPL|EPL|CDDL|CPL|OSL|EUPL)")
+
+
+def image_closure_extras(lock: dict[str, Any]) -> list[str]:
+    """Extras the root package actually defines, minus the ones we never ship."""
+    for package in lock["package"]:
+        if normalize(package["name"]) == normalize(ROOT_PACKAGE):
+            return sorted(package.get("optional-dependencies", {}))
+    raise SystemExit(f"{ROOT_PACKAGE} is missing from uv.lock")
 
 
 def classify(expression: str) -> Verdict:
@@ -371,10 +399,24 @@ def license_texts(dist: importlib_metadata.Distribution) -> tuple[tuple[str, str
     return tuple((name, body.strip()) for name, body in out if body.strip())
 
 
-def collect(lock: dict[str, Any]) -> list[Package]:
+def collect(lock: dict[str, Any], image_extras: frozenset[str]) -> list[Package]:
     packages = []
     problems = []
-    for name, version in sorted(distributed_closure(lock).items()):
+    defined = set(image_closure_extras(lock))
+    if not image_extras <= defined:
+        raise SystemExit(
+            f"error: the Dockerfile installs undefined extra(s) "
+            f"{sorted(image_extras - defined)} — pyproject defines {sorted(defined)}. "
+            f"A typo here would silently shrink what this file claims the image ships."
+        )
+    if not image_extras <= set(NOTICED_EXTRAS):
+        raise SystemExit(
+            f"error: the Dockerfile installs {sorted(image_extras - set(NOTICED_EXTRAS))}, "
+            f"which this notice does not account for. Add it to NOTICED_EXTRAS so the "
+            f"packages it pulls in are credited — they are being redistributed."
+        )
+    in_image = distributed_closure(lock, sorted(image_extras))
+    for name, version in sorted(distributed_closure(lock, NOTICED_EXTRAS).items()):
         override = read_override(name)
         if override is not None:
             expression, texts = override
@@ -397,13 +439,17 @@ def collect(lock: dict[str, Any]) -> list[Package]:
                     f"scripts/license-overrides/{name}.txt with its text"
                 )
                 continue
-        packages.append(Package(name, version, expression, classify(expression), texts))
+        packages.append(
+            Package(name, version, expression, classify(expression), texts, name in in_image)
+        )
     if problems:
         raise SystemExit("\n".join(f"error: {p}" for p in problems))
     return packages
 
 
-def render(packages: list[Package]) -> str:
+def render(packages: list[Package], image_extras: frozenset[str]) -> str:
+    extras_phrase = ", ".join(f"`--extra {extra}`" for extra in sorted(image_extras)) or "no extras"
+    in_image = sum(1 for package in packages if package.in_image)
     lines = [
         "# Third-party notices",
         "",
@@ -415,21 +461,32 @@ def render(packages: list[Package]) -> str:
         "",
         "## Scope",
         "",
-        "The wheel and sdist on PyPI contain **only** `orionbelt_runner`; pip resolves",
-        "and downloads the packages below from PyPI itself, so those artifacts",
-        "redistribute nothing and this file is informational for them.",
+        "The **wheel** on PyPI contains only `orionbelt_runner`. The **sdist** also",
+        "carries this repository's own sources — tests, examples, the vendored OBML",
+        "schema, CI config. Neither contains a single third-party package: pip resolves",
+        "and downloads everything below from PyPI itself, so both artifacts redistribute",
+        "nothing and this file is informational for them.",
         "",
-        "The **Docker image does redistribute** these packages — it copies a populated",
-        "virtualenv — as does any vendored or bundled deployment. The license text of",
-        "every package is also present inside the image at",
-        "`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`.",
+        "The **Docker image redistributes** the packages marked *yes* below. It copies a",
+        f"populated virtualenv built with {extras_phrase}, handing those packages over as",
+        "binaries, which is what makes their notices mandatory rather than courteous.",
+        "Their license texts are present inside the image too, at",
+        "`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`, alongside",
+        "`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.",
+        "",
+        "The remaining packages are reachable only through an extra the image does not",
+        "install. They are credited here because `pip install orionbelt-runner[pdf]` can",
+        "pull them in and because a future artifact may bundle them — but no artifact we",
+        "publish redistributes them today, which is also why pyphen below needs no",
+        "license election.",
         "",
         "The list is the dependency closure of `orionbelt-runner` plus the `arrow` and",
         "`pdf` extras, resolved from `uv.lock` for linux/CPython on Python 3.12–3.14.",
         "Development-only dependencies (pytest, ruff, mypy, respx) are excluded: they",
         "are tools the project runs, not code it ships. Windows- and PyPy-only",
-        "resolutions (colorama, brotlicffi) are excluded for the same reason — no",
-        "published artifact contains them.",
+        "resolutions (colorama, brotlicffi) are excluded because no artifact can",
+        "reach them: the image is linux/CPython, and so is every environment the",
+        "wheel supports being installed into here.",
         "",
         "`uv.lock` sees only PyPI packages, so the interpreter and the operating",
         "system the Docker image is built on are covered separately under",
@@ -444,12 +501,19 @@ def render(packages: list[Package]) -> str:
         "",
         "## Summary",
         "",
-        "| Package | Version | License |",
-        "| --- | --- | --- |",
+        f"{len(packages)} packages: {in_image} in the published image, "
+        f"{len(packages) - in_image} reachable only through an extra it does not install.",
+        "",
+        "| Package | Version | License | In image |",
+        "| --- | --- | --- | --- |",
     ]
     for package in packages:
         flag = "" if package.verdict == "permissive" else " ⚠️"
-        lines.append(f"| {package.name} | {package.version} | {package.license_expression}{flag} |")
+        shipped = "yes" if package.in_image else "no"
+        lines.append(
+            f"| {package.name} | {package.version} "
+            f"| {package.license_expression}{flag} | {shipped} |"
+        )
 
     flagged = [p for p in packages if p.name in ACKNOWLEDGED]
     if flagged:
@@ -458,7 +522,7 @@ def render(packages: list[Package]) -> str:
             lines += [
                 f"### {package.name} — {package.license_expression}",
                 "",
-                ACKNOWLEDGED[package.name],
+                ACKNOWLEDGED[package.name].note,
                 "",
             ]
     else:
@@ -477,14 +541,22 @@ def render(packages: list[Package]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def image_ships_pdf_extra() -> bool:
-    """Does the Dockerfile install the `pdf` extra — i.e. redistribute pyphen?"""
-    return bool(
-        re.search(
-            r"uv sync[^\n]*--extra pdf",
-            DOCKERFILE_PATH.read_text(encoding="utf-8"),
-        )
-    )
+def dockerfile_extras() -> frozenset[str]:
+    """The extras the Dockerfile installs — that is, what the image really contains.
+
+    This is the seam that decides which packages a published artifact redistributes
+    and whether pyphen needs an election, so it parses rather than pattern-matches:
+    comment lines are dropped, line continuations joined, and `--extra=pdf` is
+    accepted alongside `--extra pdf`. A guard defeated by reformatting a RUN line
+    would be worse than no guard, because it would still look like one.
+    """
+    text = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    text = re.sub(r"\\\s*\n\s*", " ", text)
+    extras: set[str] = set()
+    for command in re.findall(r"uv sync[^\n]*", text):
+        extras.update(re.findall(r"--extra[=\s]+([A-Za-z0-9_.-]+)", command))
+    return frozenset(extras)
 
 
 def enforce_pyphen_election(ships_pdf: bool, election: str | None) -> list[str]:
@@ -510,15 +582,25 @@ def enforce_pyphen_election(ships_pdf: bool, election: str | None) -> list[str]:
 def enforce_policy(packages: list[Package]) -> list[str]:
     failures = []
     for package in packages:
-        if package.verdict == "permissive" or package.name in ACKNOWLEDGED:
+        if package.verdict == "permissive":
             continue
-        failures.append(
-            f"{package.name} {package.version} is {package.verdict} "
-            f"({package.license_expression or 'no license declared'}). "
-            f"Distributing it is a decision, not a lockfile bump: either drop the "
-            f"dependency or add it to ACKNOWLEDGED in {Path(__file__).name} with the "
-            f"reason it is acceptable."
-        )
+        acknowledgement = ACKNOWLEDGED.get(package.name)
+        if acknowledgement is None:
+            failures.append(
+                f"{package.name} {package.version} is {package.verdict} "
+                f"({package.license_expression or 'no license declared'}). "
+                f"Distributing it is a decision, not a lockfile bump: either drop the "
+                f"dependency or add it to ACKNOWLEDGED in {Path(__file__).name} with the "
+                f"reason it is acceptable."
+            )
+        elif acknowledgement.license_expression != package.license_expression:
+            failures.append(
+                f"{package.name} {package.version} is acknowledged under "
+                f"{acknowledgement.license_expression!r} but now declares "
+                f"{package.license_expression!r}. The exemption covers the terms that "
+                f"were reviewed, not the package name: re-read the new license and "
+                f"update its ACKNOWLEDGED entry, or drop the dependency."
+            )
     return failures
 
 
@@ -531,11 +613,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    packages = collect(tomllib.loads(LOCK_PATH.read_text(encoding="utf-8")))
-    rendered = render(packages)
+    image_extras = dockerfile_extras()
+    packages = collect(tomllib.loads(LOCK_PATH.read_text(encoding="utf-8")), image_extras)
+    rendered = render(packages, image_extras)
 
     failures = enforce_policy(packages)
-    failures += enforce_pyphen_election(image_ships_pdf_extra(), PYPHEN_ELECTION)
+    failures += enforce_pyphen_election("pdf" in image_extras, PYPHEN_ELECTION)
     if failures:
         for failure in failures:
             print(f"error: {failure}", file=sys.stderr)

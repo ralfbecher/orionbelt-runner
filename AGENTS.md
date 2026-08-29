@@ -86,10 +86,19 @@ Note: `GET /v1/settings` also exposes `version` (release) plus `api_version` (th
 ## Third-party licenses
 
 `THIRD-PARTY-NOTICES.md` is **generated** — edit `scripts/third_party_notices.py`,
-never the file. It derives the redistributed closure from `uv.lock` (runtime +
-`arrow` + `pdf`; `dev` is tooling the project runs, not a work it ships) and pulls
-each license text from the wheel's own `*.dist-info/licenses/`, so the notice
-matches what the Docker image actually contains rather than a hand-kept list.
+never the file. It derives the closure from `uv.lock` (runtime + `arrow` + `pdf`;
+`dev` is tooling the project runs, not a work it ships) and pulls each license text
+from the wheel's own `*.dist-info/licenses/`, so the notice matches what is
+installed rather than a hand-kept list.
+
+Two scopes, kept distinct because conflating them makes the file claim things that
+are not true: the *noticed* closure is everything the project can pull in, while
+the *redistributed* set is only what the Dockerfile installs, parsed live by
+`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` handled
+— this is the seam the pyphen guard hangs off, so it must not be defeated by
+reformatting a `RUN` line). Packages outside the image are still credited, marked
+`no` in the summary, and described as informational. Install a new extra in the
+image and the run fails until `NOTICED_EXTRAS` accounts for it.
 
 The **Platform layer** section of that file covers what `uv.lock` cannot see — the
 interpreter and the Debian userland the image inherits. It is prose in the
@@ -99,7 +108,9 @@ notice instead of silently invalidating it. Change that line's shape and
 `runtime_base_image()` will fail loudly rather than emit a stale claim.
 
 CI runs it with `--check`, which fails on drift **and** on any dependency whose
-license is not permissive and not in the script's `ACKNOWLEDGED` map. That gate is
+license is not permissive and not in the script's `ACKNOWLEDGED` map — where an
+entry records the exact license expression that was reviewed, so a package that
+relicenses fails rather than inheriting an approval granted to different terms. That gate is
 the point: adding a copyleft dependency should be a decision someone writes down,
 not something that arrives with a Dependabot bump. When it fires, either drop the
 dependency or add an entry explaining why it is acceptable (see `certifi` and

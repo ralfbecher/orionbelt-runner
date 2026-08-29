@@ -61,13 +61,14 @@ def test_lgpl_is_not_mistaken_for_gpl() -> None:
     assert notices.classify("LGPL-3.0") == "weak-copyleft"
 
 
-def _package(name: str, expression: str) -> notices.Package:
+def _package(name: str, expression: str, *, in_image: bool = True) -> notices.Package:
     return notices.Package(
         name=name,
         version="1.0",
         license_expression=expression,
         verdict=notices.classify(expression),
         texts=(("LICENSE", "..."),),
+        in_image=in_image,
     )
 
 
@@ -89,7 +90,9 @@ def test_policy_fails_an_undeclared_licence() -> None:
 def test_policy_allows_an_acknowledged_dependency() -> None:
     """pyphen is copyleft and stays — because someone wrote down why."""
     assert "pyphen" in notices.ACKNOWLEDGED
-    assert notices.enforce_policy([_package("pyphen", "GPLv2+ OR LGPLv2.1+ OR MPL-1.1")]) == []
+    approved = notices.ACKNOWLEDGED["pyphen"].license_expression
+    assert notices.classify(approved) == "strong-copyleft"
+    assert notices.enforce_policy([_package("pyphen", approved)]) == []
 
 
 def test_markers_are_resolved_for_the_published_platform() -> None:
@@ -105,7 +108,7 @@ def test_closure_is_what_we_ship_and_nothing_else() -> None:
     import tomllib
 
     lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
-    closure = notices.distributed_closure(lock)
+    closure = notices.distributed_closure(lock, notices.NOTICED_EXTRAS)
 
     for shipped in ("httpx", "pydantic", "typer", "pyarrow", "weasyprint", "pyphen"):
         assert shipped in closure, f"{shipped} is redistributed but has no notice"
@@ -147,10 +150,10 @@ def test_platform_notice_tracks_the_dockerfile() -> None:
 
 def test_no_pyphen_election_is_needed_while_nothing_ships_it() -> None:
     """Today's state: the image is `--extra arrow`, so pyphen is never ours to license."""
-    assert not notices.image_ships_pdf_extra()
+    assert "pdf" not in notices.dockerfile_extras()
     assert notices.PYPHEN_ELECTION is None
     assert notices.enforce_pyphen_election(ships_pdf=False, election=None) == []
-    assert "No election has been made" in notices.ACKNOWLEDGED["pyphen"]
+    assert "No election has been made" in notices.ACKNOWLEDGED["pyphen"].note
 
 
 def test_shipping_the_pdf_extra_forces_the_election() -> None:
@@ -162,3 +165,67 @@ def test_shipping_the_pdf_extra_forces_the_election() -> None:
 
 def test_a_recorded_election_satisfies_the_guard() -> None:
     assert notices.enforce_pyphen_election(ships_pdf=True, election="LGPL-2.1-or-later") == []
+
+
+def test_acknowledgement_is_bound_to_the_licence_that_was_reviewed() -> None:
+    """Relicensing must re-enter the gate, not inherit approval granted to old terms."""
+    approved = notices.ACKNOWLEDGED["certifi"].license_expression
+    assert notices.enforce_policy([_package("certifi", approved)]) == []
+
+    failures = notices.enforce_policy([_package("certifi", "GPL-3.0-only")])
+    assert len(failures) == 1
+    assert "acknowledged under" in failures[0]
+    assert "GPL-3.0-only" in failures[0]
+
+
+def test_every_acknowledgement_matches_what_the_closure_declares() -> None:
+    """The approved expressions must be the live ones, or the gate is already stale."""
+    import tomllib
+
+    lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
+    packages = {p.name: p for p in notices.collect(lock, notices.dockerfile_extras())}
+    for name, acknowledgement in notices.ACKNOWLEDGED.items():
+        assert packages[name].license_expression == acknowledgement.license_expression
+
+
+@pytest.mark.parametrize(
+    "run_line",
+    [
+        "RUN uv sync --frozen --no-dev --extra arrow --extra pdf",
+        "RUN uv sync --frozen --extra=pdf",
+        "RUN uv sync --frozen --no-dev \\\n    --extra arrow \\\n    --extra pdf",
+        "RUN --mount=type=cache,target=/root/.cache/uv \\\n    uv sync --extra pdf",
+    ],
+)
+def test_dockerfile_extras_survives_reformatting(
+    run_line: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A guard that a line continuation defeats is worse than no guard."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(f"FROM python:3.14-slim AS runtime\n{run_line}\n")
+    monkeypatch.setattr(notices, "DOCKERFILE_PATH", dockerfile)
+    assert "pdf" in notices.dockerfile_extras()
+
+
+def test_dockerfile_extras_ignores_comments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prose about `uv sync --extra pdf` is not an installation of it."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# PDF stays out; adding it would mean `uv sync --extra pdf` here.\n"
+        "RUN uv sync --frozen --extra arrow\n"
+    )
+    monkeypatch.setattr(notices, "DOCKERFILE_PATH", dockerfile)
+    assert notices.dockerfile_extras() == frozenset({"arrow"})
+
+
+def test_the_image_column_reflects_what_the_dockerfile_installs() -> None:
+    """`pdf`-only packages are credited but must not be claimed as redistributed."""
+    import tomllib
+
+    lock = tomllib.loads(notices.LOCK_PATH.read_text(encoding="utf-8"))
+    packages = {p.name: p for p in notices.collect(lock, notices.dockerfile_extras())}
+    assert packages["pyarrow"].in_image, "the image is built --extra arrow"
+    for pdf_only in ("pyphen", "weasyprint", "pillow", "webencodings"):
+        assert not packages[pdf_only].in_image, f"{pdf_only} is not in the image"

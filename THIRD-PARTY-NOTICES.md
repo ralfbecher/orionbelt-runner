@@ -8,21 +8,32 @@ packages it depends on and reproduces the attribution each one requires.
 
 ## Scope
 
-The wheel and sdist on PyPI contain **only** `orionbelt_runner`; pip resolves
-and downloads the packages below from PyPI itself, so those artifacts
-redistribute nothing and this file is informational for them.
+The **wheel** on PyPI contains only `orionbelt_runner`. The **sdist** also
+carries this repository's own sources — tests, examples, the vendored OBML
+schema, CI config. Neither contains a single third-party package: pip resolves
+and downloads everything below from PyPI itself, so both artifacts redistribute
+nothing and this file is informational for them.
 
-The **Docker image does redistribute** these packages — it copies a populated
-virtualenv — as does any vendored or bundled deployment. The license text of
-every package is also present inside the image at
-`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`.
+The **Docker image redistributes** the packages marked *yes* below. It copies a
+populated virtualenv built with `--extra arrow`, handing those packages over as
+binaries, which is what makes their notices mandatory rather than courteous.
+Their license texts are present inside the image too, at
+`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`, alongside
+`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.
+
+The remaining packages are reachable only through an extra the image does not
+install. They are credited here because `pip install orionbelt-runner[pdf]` can
+pull them in and because a future artifact may bundle them — but no artifact we
+publish redistributes them today, which is also why pyphen below needs no
+license election.
 
 The list is the dependency closure of `orionbelt-runner` plus the `arrow` and
 `pdf` extras, resolved from `uv.lock` for linux/CPython on Python 3.12–3.14.
 Development-only dependencies (pytest, ruff, mypy, respx) are excluded: they
 are tools the project runs, not code it ships. Windows- and PyPy-only
-resolutions (colorama, brotlicffi) are excluded for the same reason — no
-published artifact contains them.
+resolutions (colorama, brotlicffi) are excluded because no artifact can
+reach them: the image is linux/CPython, and so is every environment the
+wheel supports being installed into here.
 
 `uv.lock` sees only PyPI packages, so the interpreter and the operating
 system the Docker image is built on are covered separately under
@@ -37,43 +48,45 @@ uv run --no-sync python scripts/third_party_notices.py
 
 ## Summary
 
-| Package | Version | License |
-| --- | --- | --- |
-| annotated-doc | 0.0.4 | MIT |
-| annotated-types | 0.7.0 | MIT License |
-| anyio | 4.14.2 | MIT |
-| brotli | 1.2.0 | MIT |
-| certifi | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) ⚠️ |
-| cffi | 2.1.0 | MIT-0 |
-| cssselect2 | 0.9.0 | BSD License |
-| fonttools | 4.63.0 | MIT |
-| h11 | 0.16.0 | MIT License |
-| httpcore | 1.0.9 | BSD-3-Clause |
-| httpx | 0.28.1 | BSD License |
-| idna | 3.18 | BSD-3-Clause |
-| markdown | 3.10.3 | BSD-3-Clause |
-| markdown-it-py | 4.2.0 | MIT License |
-| mdurl | 0.1.2 | MIT License |
-| pillow | 12.3.0 | MIT-CMU |
-| pyarrow | 25.0.1 | Apache-2.0 |
-| pycparser | 3.0 | BSD-3-Clause |
-| pydantic | 2.13.4 | MIT |
-| pydantic-core | 2.46.4 | MIT |
-| pydyf | 0.12.1 | BSD License |
-| pygments | 2.20.0 | BSD-2-Clause |
-| pyphen | 0.17.2 | GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1) ⚠️ |
-| rich | 15.0.0 | MIT License |
-| ruamel-yaml | 0.19.1 | MIT License |
-| shellingham | 1.5.4 | ISC License (ISCL) |
-| structlog | 26.1.0 | MIT OR Apache-2.0 |
-| tinycss2 | 1.5.1 | BSD License |
-| tinyhtml5 | 2.1.0 | MIT License |
-| typer | 0.27.1 | MIT |
-| typing-extensions | 4.16.0 | PSF-2.0 |
-| typing-inspection | 0.4.2 | MIT |
-| weasyprint | 69.0 | BSD License |
-| webencodings | 0.5.1 | BSD-3-Clause |
-| zopfli | 0.4.3 | Apache Software License |
+35 packages: 22 in the published image, 13 reachable only through an extra it does not install.
+
+| Package | Version | License | In image |
+| --- | --- | --- | --- |
+| annotated-doc | 0.0.4 | MIT | yes |
+| annotated-types | 0.7.0 | MIT License | yes |
+| anyio | 4.14.2 | MIT | yes |
+| brotli | 1.2.0 | MIT | no |
+| certifi | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) ⚠️ | yes |
+| cffi | 2.1.0 | MIT-0 | no |
+| cssselect2 | 0.9.0 | BSD License | no |
+| fonttools | 4.63.0 | MIT | no |
+| h11 | 0.16.0 | MIT License | yes |
+| httpcore | 1.0.9 | BSD-3-Clause | yes |
+| httpx | 0.28.1 | BSD License | yes |
+| idna | 3.18 | BSD-3-Clause | yes |
+| markdown | 3.10.3 | BSD-3-Clause | yes |
+| markdown-it-py | 4.2.0 | MIT License | yes |
+| mdurl | 0.1.2 | MIT License | yes |
+| pillow | 12.3.0 | MIT-CMU | no |
+| pyarrow | 25.0.1 | Apache-2.0 | yes |
+| pycparser | 3.0 | BSD-3-Clause | no |
+| pydantic | 2.13.4 | MIT | yes |
+| pydantic-core | 2.46.4 | MIT | yes |
+| pydyf | 0.12.1 | BSD License | no |
+| pygments | 2.20.0 | BSD-2-Clause | yes |
+| pyphen | 0.17.2 | GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1) ⚠️ | no |
+| rich | 15.0.0 | MIT License | yes |
+| ruamel-yaml | 0.19.1 | MIT License | yes |
+| shellingham | 1.5.4 | ISC License (ISCL) | yes |
+| structlog | 26.1.0 | MIT OR Apache-2.0 | yes |
+| tinycss2 | 1.5.1 | BSD License | no |
+| tinyhtml5 | 2.1.0 | MIT License | no |
+| typer | 0.27.1 | MIT | yes |
+| typing-extensions | 4.16.0 | PSF-2.0 | yes |
+| typing-inspection | 0.4.2 | MIT | yes |
+| weasyprint | 69.0 | BSD License | no |
+| webencodings | 0.5.1 | BSD-3-Clause | no |
+| zopfli | 0.4.3 | Apache Software License | no |
 
 ## Conditions worth knowing (⚠️ above)
 
@@ -83,7 +96,7 @@ MPL-2.0 is file-level copyleft: it reaches the files themselves, not the program
 
 ### pyphen — GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1)
 
-Tri-licensed GPL-2.0+/LGPL-2.1+/MPL-1.1, reached only through the `pdf` extra (WeasyPrint's hyphenation). **No election has been made, because RALFORION does not redistribute pyphen.** The published Docker image is built with `--extra arrow` and contains no copy of it; someone running `pip install orionbelt-runner[pdf]` receives pyphen from PyPI directly rather than from us, which makes the choice among its three licenses theirs to make, not ours. It is listed here because it is part of the closure the runner can use, not because it is shipped. Should a future artifact bundle it — a PDF-capable image, a vendored deployment — an election becomes necessary at that point, and `scripts/third_party_notices.py` fails the build if the Dockerfile starts installing the `pdf` extra while no election is recorded. Its bundled LibreOffice hyphenation dictionaries carry their own GPL/LGPL/MPL terms.
+Tri-licensed GPL-2.0+/LGPL-2.1+/MPL-1.1, reached only through the `pdf` extra (WeasyPrint's hyphenation). **No election has been made, because RALFORION does not redistribute pyphen.** The published Docker image does not install the `pdf` extra, so it contains no copy of it; someone running `pip install orionbelt-runner[pdf]` receives pyphen from PyPI directly rather than from us, which makes the choice among its three licenses theirs to make, not ours. It is listed here because it is part of the closure the runner can use, not because it is shipped. Should a future artifact bundle it — a PDF-capable image, a vendored deployment — an election becomes necessary at that point, and `scripts/third_party_notices.py` fails the build if the Dockerfile starts installing the `pdf` extra while no election is recorded. Its bundled LibreOffice hyphenation dictionaries carry their own GPL/LGPL/MPL terms.
 
 ## Platform layer (Docker image)
 

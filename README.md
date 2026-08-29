@@ -454,13 +454,18 @@ For commercial licensing inquiries, contact: licensing@ralforion.com
 
 ### Third-party dependencies
 
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists every package the runner
-redistributes — the runtime closure plus the `arrow` and `pdf` extras — with its
-license and full license text. The wheel on PyPI contains only
-`orionbelt_runner` and redistributes none of them; the Docker image does, and
-carries the same texts at
-`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/` as well as
-`/app/THIRD-PARTY-NOTICES.md`.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists every third-party package
+the runner can pull in — the runtime closure plus the `arrow` and `pdf` extras —
+with its license, its full license text, and whether the Docker image actually
+redistributes it.
+
+That last column matters, because the artifacts differ. The wheel contains only
+`orionbelt_runner`; the sdist adds this repository's own sources. Neither carries
+any third-party code — pip fetches it from PyPI — so for both the file is
+informational. The **image** genuinely redistributes what the Dockerfile installs
+(`--extra arrow` today, so no WeasyPrint or pyphen), and carries the same texts at
+`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/` alongside
+`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.
 
 The interpreter and the Debian base the image is built on sit below what
 `uv.lock` can see, so they are covered by a **Platform layer** section in the same
@@ -472,9 +477,12 @@ time. No GPL code is linked into or imported by the runner.
 Everything in the closure is permissive (MIT / BSD / Apache-2.0 / ISC / PSF) with
 two documented exceptions, `certifi` (MPL-2.0) and `pyphen` (tri-licensed, `pdf`
 extra only, and not redistributed by us — so no license election is needed) —
-both explained in that file. CI
-regenerates the notices and fails if a dependency arrives under a license nobody
-has signed off on:
+both explained in that file. An
+acknowledgement is bound to the license expression that was reviewed, not to the
+package name, so a dependency that relicenses comes back through the gate.
+
+CI regenerates the notices and fails if a dependency arrives under a license
+nobody has signed off on:
 
 ```bash
 uv run --no-sync python scripts/third_party_notices.py          # regenerate
