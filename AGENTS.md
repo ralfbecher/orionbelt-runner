@@ -83,6 +83,27 @@ The floor lives in `client.py` as `MINIMUM_OBSL_MAJOR` / `MINIMUM_OBSL_MINOR` �
 
 Note: `GET /v1/settings` also exposes `version` (release) plus `api_version` (the REST prefix, currently `"v1"` — *not* a semver). The runner still reads `settings()` mid-run to capture `version` / `api_version` into the run log, but the version *gate* is the `/health` preflight.
 
+## Releasing
+
+A release is a tag. `pyproject.toml`, `src/orionbelt_runner/__init__.py` and
+`uv.lock` carry the version; bump all three, merge, then tag `vX.Y.Z` on `main`.
+Pushing that tag fans out to two workflows: `docker-publish.yml` builds and pushes
+`:X.Y.Z`, `:X.Y`, `:X` and `:latest`, and `pypi-publish.yml` uploads the sdist and
+wheel. Both are tag-gated and never fire on a branch push.
+
+PyPI uses Trusted Publishing, so there is no token: the `pypi` GitHub
+environment is what the identity binds to, and renaming it breaks the upload
+until the publisher on PyPI is renamed to match. A manual run publishes the
+current ref, which is how a version tagged before the workflow existed gets
+uploaded — dispatch against `main` in that case, since the workflow file does not
+exist at the older tag.
+
+The publish job verifies the tag against both version strings first. That check
+exists because the drift has happened: 0.9.0 sat in `pyproject.toml` through
+several commits with no tag behind it, so v0.8.1 stayed the newest release while
+two user-facing changes went unshipped. A tag that disagrees with what it
+packages is worse than a missing one.
+
 ## Third-party licenses
 
 `THIRD-PARTY-NOTICES.md` is **generated** — edit `scripts/third_party_notices.py`,
