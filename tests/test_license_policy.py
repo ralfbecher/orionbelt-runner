@@ -182,8 +182,26 @@ def test_shipping_the_pdf_extra_forces_the_election() -> None:
     assert "PYPHEN_ELECTION" in failures[0]
 
 
-def test_a_recorded_election_satisfies_the_guard() -> None:
-    assert notices.enforce_pyphen_election(ships_pdf=True, election="LGPL-2.1-or-later") == []
+@pytest.mark.parametrize(
+    ("ships_pdf", "election", "ok"),
+    [
+        (True, "LGPL-2.1-or-later", True),  # shipped and elected
+        (False, None, True),  # not shipped, nothing committed
+        (True, None, False),  # shipped with no record of which licence
+        (False, "LGPL-2.1-or-later", False),  # a commitment nothing requires
+    ],
+)
+def test_the_election_and_the_dockerfile_move_together(
+    ships_pdf: bool, election: str | None, ok: bool
+) -> None:
+    """Both directions are enforced, which is what lets the docs claim they are.
+
+    The reverse case is not mere tidiness: the elected branch of the pyphen note
+    states that the image hands over a copy, so an election left behind after the
+    extra is dropped would put a false sentence in a licence document.
+    """
+    failures = notices.enforce_pyphen_election(ships_pdf=ships_pdf, election=election)
+    assert (failures == []) is ok, failures
 
 
 def test_acknowledgement_is_bound_to_the_licence_that_was_reviewed() -> None:

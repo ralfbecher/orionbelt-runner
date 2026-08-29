@@ -640,13 +640,22 @@ def dockerfile_extras(defined_extras: Collection[str]) -> frozenset[str]:
 
 
 def enforce_pyphen_election(ships_pdf: bool, election: str | None) -> list[str]:
-    """Force the election at the moment it starts to matter, and not before.
+    """Force the election at the moment it starts to matter, and not a moment before.
 
-    Writing an election down while nothing we publish contains pyphen would be
-    committing the company to terms it has no need to accept. Shipping pyphen
-    without one would be the opposite mistake: distributing a GPL-optional package
-    with no record of which option was taken.
+    Both directions are errors. Shipping pyphen with no election distributes a
+    GPL-optional package with no record of which option was taken. Recording one
+    while nothing we publish contains pyphen commits the company to terms it has no
+    need to accept — and makes the generated notice untrue, because the elected
+    branch of that note states outright that the image hands over a copy.
     """
+    if not ships_pdf and election is not None:
+        return [
+            f"the Dockerfile no longer installs the `pdf` extra, so nothing we publish "
+            f"redistributes pyphen — but PYPHEN_ELECTION still records {election!r}. "
+            f"That commits RALFORION to terms nothing requires, and makes the generated "
+            f"note say the image hands over a copy of pyphen when it does not. Set "
+            f"PYPHEN_ELECTION back to None."
+        ]
     if ships_pdf and election is None:
         return [
             "the Dockerfile now installs the `pdf` extra, so a published artifact "

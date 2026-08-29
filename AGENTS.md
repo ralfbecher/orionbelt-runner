@@ -143,11 +143,16 @@ dependency or add an entry explaining why it is acceptable (see `certifi` and
 three licenses, and choosing one only becomes necessary once we redistribute it.
 The image installs `--extra pdf`, so it does, and `PYPHEN_ELECTION` records the
 answer — **LGPL-2.1-or-later**, the arrangement for a library imported unmodified
-from `site-packages`. `enforce_pyphen_election()` keeps the two in step in both
-directions: adding the extra without an election fails the build, and if the
-image ever stops installing it, set the election back to `None` rather than
-leaving a commitment in place that nothing requires. A wheel that ships no license file gets a hand-vendored
-one in `scripts/license-overrides/`, with its provenance in the file.
+from `site-packages`. `enforce_pyphen_election()` fails the build in both
+directions: adding the extra without recording an election, and leaving an
+election recorded after the extra is dropped. The second is not tidiness — the
+elected wording states that the image hands over a copy of pyphen, so a stale
+election puts a false sentence in a licence document.
+
+A wheel that ships no license file gets a hand-vendored one in
+`scripts/license-overrides/`, with its provenance recorded in the file. Anything
+so vendored is called out in the notice as the only copy of those terms inside the
+image, since the package's own `dist-info` carries none.
 
 ## Out of scope (for now)
 
