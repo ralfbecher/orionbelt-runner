@@ -68,8 +68,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --extra dev --python ${{ matrix.python }}
 
+      # test_report_pdf.py skips itself when WeasyPrint cannot render, so
+      # without these the PDF suite quietly contributes nothing on the runner.
+      - name: Install PDF system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 fonts-dejavu-core
+
+      # -rs prints why anything skipped: a suite that silently stops covering
+      # something is the failure mode this whole step exists to prevent.
       - name: Test (pytest)
-        run: uv run --frozen --python ${{ matrix.python }} pytest
+        run: uv run --frozen --python ${{ matrix.python }} pytest -rs
 
   # Build the image on every PR so Dockerfile and base-image changes are
   # exercised here rather than first at release time. Never pushes — the
@@ -103,3 +113,14 @@ jobs:
           docker run --rm orionbelt-runner:ci version
           docker run --rm --entrypoint python orionbelt-runner:ci -c \
             "import pydantic, httpx, ruamel.yaml, typer, structlog, markdown, orionbelt_runner"
+
+      # PDF is the one output whose correctness lives in the Dockerfile rather
+      # than the code: it needs Pango and a font, neither of which is a wheel.
+      # An import check would pass with both missing, so this renders a real
+      # report through render_pdf and asserts a font was embedded. The unit
+      # tests cannot stand in for it — they skip themselves when WeasyPrint
+      # cannot render, which is the exact condition this must fail on.
+      - name: PDF renders inside the image
+        run: |
+          docker run --rm -v "$PWD/tests:/smoke:ro" \
+            --entrypoint python orionbelt-runner:ci /smoke/smoke_pdf_in_image.py

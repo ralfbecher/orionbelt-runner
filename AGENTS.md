@@ -115,9 +115,13 @@ installed rather than a hand-kept list.
 Two scopes, kept distinct because conflating them makes the file claim things that
 are not true: the *noticed* closure is everything the project can pull in, while
 the *redistributed* set is only what the Dockerfile installs, parsed live by
-`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` handled
-— this is the seam the pyphen guard hangs off, so it must not be defeated by
-reformatting a `RUN` line). Packages outside the image are still credited, marked
+`dockerfile_extras()` (comments dropped, continuations joined, `--extra=x` and
+`--all-extras` / `--no-extra` handled — this is the seam the pyphen guard hangs
+off, so it must not be defeated by reformatting a `RUN` line). Its dangerous
+failure is an *empty* answer rather than a wrong one: nothing would be marked as
+redistributed and the election check would not fire, while the notice still read
+as verified. So an install command it does not understand raises instead — if you
+change how the image installs, teach the parser first. Packages outside the image are still credited, marked
 `no` in the summary, and described as informational. Install a new extra in the
 image and the run fails until `NOTICED_EXTRAS` accounts for it.
 
@@ -136,13 +140,19 @@ the point: adding a copyleft dependency should be a decision someone writes down
 not something that arrives with a Dependabot bump. When it fires, either drop the
 dependency or add an entry explaining why it is acceptable (see `certifi` and
 `pyphen` for the shape). pyphen carries a second guard: it offers a choice of
-three licenses, and choosing one is only necessary if we redistribute it — which
-nothing published does today, since the image is built `--extra arrow`. Add
-`--extra pdf` to the Dockerfile and `enforce_pyphen_election()` fails the build
-until `PYPHEN_ELECTION` records the choice. Do not pre-empt it by setting that
-value early: an election is a commitment, and it should be made when it starts to
-bind, not before. A wheel that ships no license file gets a hand-vendored
-one in `scripts/license-overrides/`, with its provenance in the file.
+three licenses, and choosing one only becomes necessary once we redistribute it.
+The image installs `--extra pdf`, so it does, and `PYPHEN_ELECTION` records the
+answer — **LGPL-2.1-or-later**, the arrangement for a library imported unmodified
+from `site-packages`. `enforce_pyphen_election()` fails the build in both
+directions: adding the extra without recording an election, and leaving an
+election recorded after the extra is dropped. The second is not tidiness — the
+elected wording states that the image hands over a copy of pyphen, so a stale
+election puts a false sentence in a licence document.
+
+A wheel that ships no license file gets a hand-vendored one in
+`scripts/license-overrides/`, with its provenance recorded in the file. Anything
+so vendored is called out in the notice as the only copy of those terms inside the
+image, since the package's own `dist-info` carries none.
 
 ## Out of scope (for now)
 

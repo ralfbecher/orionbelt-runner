@@ -31,7 +31,7 @@ import importlib.metadata as importlib_metadata
 import re
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
@@ -111,11 +111,13 @@ LICENSE_ALIASES = {
     "GNU LESSER GENERAL PUBLIC LICENSE V2 OR LATER (LGPLV2+)": "LGPL-2.1-OR-LATER",
 }
 
-# pyphen offers a choice of three licenses (see _pyphen_note). Electing one is only
-# necessary if we redistribute it, and today nothing we publish does — the image
-# installs no `pdf` extra. Set this to "LGPL-2.1-or-later" or "MPL-1.1" the moment
-# that changes; enforce_pyphen_election() fails the build if it does not.
-PYPHEN_ELECTION: str | None = None
+# pyphen offers a choice of three licenses (see _pyphen_note), and the image ships
+# it, so one of them has to be chosen. RALFORION elects the LGPL: pyphen is used
+# unmodified as an ordinary installed package that the runner imports, which is
+# the case the LGPL is written for, and it is the election a licence audit expects
+# to see. The GPL option is never available to us — it would reach the runner's
+# own code. Set back to None only if the image stops installing the `pdf` extra.
+PYPHEN_ELECTION: str | None = "LGPL-2.1-or-later"
 
 
 def _pyphen_note() -> str:
@@ -139,11 +141,16 @@ def _pyphen_note() -> str:
             "LibreOffice hyphenation dictionaries carry their own GPL/LGPL/MPL terms."
         )
     return shape + (
-        f"Because an artifact of ours redistributes it, **RALFORION elects "
-        f"{PYPHEN_ELECTION}** and does not accept the GPL option. Pyphen is used "
-        f"unmodified as a separate installed package, so the runner remains under its "
-        f"own license. Its bundled LibreOffice hyphenation dictionaries carry their own "
-        f"GPL/LGPL/MPL terms."
+        f"The Docker image installs that extra, so it hands over a copy of pyphen and "
+        f"the choice among its three licenses becomes ours to make: **RALFORION elects "
+        f"{PYPHEN_ELECTION}** and does not accept the GPL option. Pyphen is imported "
+        f"unmodified as an ordinary installed package — replaceable in place under "
+        f"`site-packages`, never vendored into `orionbelt_runner` or statically linked "
+        f"— which is the arrangement the LGPL permits, so the runner remains under its "
+        f"own license. Do not patch pyphen in the image: modifications to it would be "
+        f"LGPL and would have to be published. Its source for the version shipped is "
+        f"the sdist on PyPI. The LibreOffice hyphenation dictionaries bundled inside it "
+        f"travel with it and carry their own GPL/LGPL/MPL terms."
     )
 
 
@@ -200,8 +207,9 @@ ships every package's terms at `/usr/share/doc/<package>/copyright`, so that
 attribution travels inside the image alongside the binaries it covers. Two points
 on the copyleft there:
 
-- Nothing GPL is *linked*. The libraries CPython binds against — glibc, libffi,
-  libssl, libsqlite3, liblzma, readline — are LGPL or permissive, and all are
+- Nothing GPL is *linked*. The libraries bound at runtime — glibc, libffi,
+  libssl, libsqlite3, liblzma, readline, and Pango, which WeasyPrint draws
+  through — are LGPL or permissive, and all are
   linked dynamically, which is the case the LGPL permits. (A Debian `copyright`
   file frequently mentions the GPL because a build script or a sibling binary in
   the same source package is GPL'd; glibc is the standard example, an LGPL
@@ -448,8 +456,46 @@ def collect(lock: dict[str, Any], image_extras: frozenset[str]) -> list[Package]
 
 
 def render(packages: list[Package], image_extras: frozenset[str]) -> str:
-    extras_phrase = ", ".join(f"`--extra {extra}`" for extra in sorted(image_extras)) or "no extras"
+    # Packages whose text had to be vendored ship none of their own, so inside the
+    # image this file is the only place their license exists. Saying so keeps the
+    # sentence above honest without hardcoding which package it is.
+    vendored = sorted(
+        package.name for package in packages if (OVERRIDE_DIR / f"{package.name}.txt").exists()
+    )
+    vendored_note = (
+        [
+            f"One exception: {', '.join(f'`{name}`' for name in vendored)} ships no",
+            "license file of its own — upstream omits it from the wheel — so inside the",
+            "image this file is the only copy of its terms. Its text is reproduced below",
+            "from the project's own repository.",
+            "",
+        ]
+        if vendored
+        else []
+    )
+
+    quoted = [f"`--extra {extra}`" for extra in sorted(image_extras)]
+    # "a and b", "a, b and c" — a bare comma join reads as a truncated list.
+    extras_phrase = (
+        " and ".join(filter(None, [", ".join(quoted[:-1])] + quoted[-1:])) or "no extras"
+    )
     in_image = sum(1 for package in packages if package.in_image)
+    everything = in_image == len(packages)
+    image_scope = "every package below" if everything else "the packages marked *yes* below"
+    # Only describe an informational set when one exists — with every extra
+    # installed there is nothing outside the image, and the paragraph would be
+    # describing an empty set.
+    outside_image: list[str] = (
+        []
+        if everything
+        else [
+            "The remaining packages are reachable only through an extra the image does",
+            "not install. They are credited here because `pip install orionbelt-runner[pdf]`",
+            "can pull them in and because a future artifact may bundle them — but no",
+            "artifact we publish redistributes them today.",
+            "",
+        ]
+    )
     lines = [
         "# Third-party notices",
         "",
@@ -467,19 +513,15 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
         "and downloads everything below from PyPI itself, so both artifacts redistribute",
         "nothing and this file is informational for them.",
         "",
-        "The **Docker image redistributes** the packages marked *yes* below. It copies a",
-        f"populated virtualenv built with {extras_phrase}, handing those packages over as",
+        f"The **Docker image redistributes** {image_scope}. It copies a populated",
+        f"virtualenv built with {extras_phrase}, handing those packages over as",
         "binaries, which is what makes their notices mandatory rather than courteous.",
         "Their license texts are present inside the image too, at",
         "`/app/.venv/lib/python*/site-packages/*.dist-info/licenses/`, alongside",
         "`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.",
         "",
-        "The remaining packages are reachable only through an extra the image does not",
-        "install. They are credited here because `pip install orionbelt-runner[pdf]` can",
-        "pull them in and because a future artifact may bundle them — but no artifact we",
-        "publish redistributes them today, which is also why pyphen below needs no",
-        "license election.",
-        "",
+        *vendored_note,
+        *outside_image,
         "The list is the dependency closure of `orionbelt-runner` plus the `arrow` and",
         "`pdf` extras, resolved from `uv.lock` for linux/CPython on Python 3.12–3.14.",
         "Development-only dependencies (pytest, ruff, mypy, respx) are excluded: they",
@@ -501,8 +543,12 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
         "",
         "## Summary",
         "",
-        f"{len(packages)} packages: {in_image} in the published image, "
-        f"{len(packages) - in_image} reachable only through an extra it does not install.",
+        (
+            f"{len(packages)} packages, all of them redistributed by the published image."
+            if everything
+            else f"{len(packages)} packages: {in_image} in the published image, "
+            f"{len(packages) - in_image} reachable only through an extra it does not install."
+        ),
         "",
         "| Package | Version | License | In image |",
         "| --- | --- | --- | --- |",
@@ -541,32 +587,75 @@ def render(packages: list[Package], image_extras: frozenset[str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def dockerfile_extras() -> frozenset[str]:
+# Installers this parser understands. Anything else in the Dockerfile that
+# installs the project is refused rather than ignored — see dockerfile_extras.
+_INSTALL_COMMAND = re.compile(
+    r"\b(uv sync|uv pip install|pip install|pip3 install|poetry install)\b"
+)
+
+
+def dockerfile_extras(defined_extras: Collection[str]) -> frozenset[str]:
     """The extras the Dockerfile installs — that is, what the image really contains.
 
-    This is the seam that decides which packages a published artifact redistributes
-    and whether pyphen needs an election, so it parses rather than pattern-matches:
-    comment lines are dropped, line continuations joined, and `--extra=pdf` is
-    accepted alongside `--extra pdf`. A guard defeated by reformatting a RUN line
-    would be worse than no guard, because it would still look like one.
+    This is the seam deciding which packages a published artifact redistributes and
+    whether pyphen needs an election, so it parses rather than pattern-matches:
+    comment lines are dropped, continuations joined, `--extra=pdf` accepted beside
+    `--extra pdf`, `--all-extras` expanded against what pyproject defines, and
+    `--no-extra` subtracted. A guard defeated by reformatting a RUN line would be
+    worse than no guard, because it would still look like one.
+
+    The failure mode to design against is not a wrong answer but an empty one: a
+    silent `frozenset()` would mark every package as not redistributed and skip the
+    election check, all while the file still reads as though it had been verified.
+    So an install command this parser does not understand raises instead — better a
+    build that stops on an unfamiliar line than a notice quietly describing an image
+    nobody shipped.
     """
     text = DOCKERFILE_PATH.read_text(encoding="utf-8")
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     text = re.sub(r"\\\s*\n\s*", " ", text)
+
+    unknown = {
+        match.group(1) for match in _INSTALL_COMMAND.finditer(text) if match.group(1) != "uv sync"
+    }
+    if unknown:
+        raise SystemExit(
+            f"error: the Dockerfile installs with {sorted(unknown)}, which "
+            f"{Path(__file__).name} cannot read extras from. Teach dockerfile_extras() "
+            f"that form — leaving it unparsed would silently report an image that "
+            f"redistributes nothing."
+        )
+
     extras: set[str] = set()
     for command in re.findall(r"uv sync[^\n]*", text):
-        extras.update(re.findall(r"--extra[=\s]+([A-Za-z0-9_.-]+)", command))
+        # --all-extras means every extra pyproject defines, `dev` included. Expanding
+        # it rather than special-casing is what lets the existing NOTICED_EXTRAS check
+        # object to shipping an extra this notice does not account for.
+        if re.search(r"(?<![\w-])--all-extras\b", command):
+            extras.update(defined_extras)
+        extras.update(re.findall(r"(?<![\w-])--extra[=\s]+([A-Za-z0-9_.-]+)", command))
+        for excluded in re.findall(r"(?<![\w-])--no-extra[=\s]+([A-Za-z0-9_.-]+)", command):
+            extras.discard(excluded)
     return frozenset(extras)
 
 
 def enforce_pyphen_election(ships_pdf: bool, election: str | None) -> list[str]:
-    """Force the election at the moment it starts to matter, and not before.
+    """Force the election at the moment it starts to matter, and not a moment before.
 
-    Writing an election down while nothing we publish contains pyphen would be
-    committing the company to terms it has no need to accept. Shipping pyphen
-    without one would be the opposite mistake: distributing a GPL-optional package
-    with no record of which option was taken.
+    Both directions are errors. Shipping pyphen with no election distributes a
+    GPL-optional package with no record of which option was taken. Recording one
+    while nothing we publish contains pyphen commits the company to terms it has no
+    need to accept — and makes the generated notice untrue, because the elected
+    branch of that note states outright that the image hands over a copy.
     """
+    if not ships_pdf and election is not None:
+        return [
+            f"the Dockerfile no longer installs the `pdf` extra, so nothing we publish "
+            f"redistributes pyphen — but PYPHEN_ELECTION still records {election!r}. "
+            f"That commits RALFORION to terms nothing requires, and makes the generated "
+            f"note say the image hands over a copy of pyphen when it does not. Set "
+            f"PYPHEN_ELECTION back to None."
+        ]
     if ships_pdf and election is None:
         return [
             "the Dockerfile now installs the `pdf` extra, so a published artifact "
@@ -613,8 +702,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    image_extras = dockerfile_extras()
-    packages = collect(tomllib.loads(LOCK_PATH.read_text(encoding="utf-8")), image_extras)
+    lock = tomllib.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    image_extras = dockerfile_extras(image_closure_extras(lock))
+    packages = collect(lock, image_extras)
     rendered = render(packages, image_extras)
 
     failures = enforce_policy(packages)

@@ -43,7 +43,7 @@ project's environment:
 ```bash
 uv tool install orionbelt-runner              # core: markdown + HTML reports, TSV exports
 uv tool install "orionbelt-runner[arrow]"     # + Parquet / Arrow exports and S3 destinations
-uv tool install "orionbelt-runner[pdf]"       # + PDF output (requires Pango / Cairo)
+uv tool install "orionbelt-runner[pdf]"       # + PDF output (requires Pango — see below)
 ```
 
 `pip install orionbelt-runner` works the same way if you'd rather manage the
@@ -57,16 +57,21 @@ From a checkout, for development or to run an unreleased revision:
 
 ```bash
 uv sync                  # core: markdown + HTML reports, TSV exports
-uv sync --extra pdf      # also enable PDF output (requires Pango / Cairo)
+uv sync --extra pdf      # also enable PDF output (requires Pango — see below)
 uv sync --extra arrow    # also enable Parquet / Arrow exports and S3 destinations
 uv run orionbelt-runner run spec.yaml
 ```
 
-PDF output needs WeasyPrint, which depends on system libraries (Pango,
-Cairo, GDK-Pixbuf). On macOS: `brew install pango`. On Debian / Ubuntu:
-`apt install libpango-1.0-0 libpangoft2-1.0-0`. See the
+PDF output needs WeasyPrint, which draws through **Pango** — a system library
+rather than a wheel, which is why it sits behind an extra. On macOS:
+`brew install pango`. On Debian / Ubuntu: `apt install libpango-1.0-0
+libpangoft2-1.0-0`, plus a font package such as `fonts-dejavu-core` on a system
+that has none, or text renders as empty boxes. Cairo and GDK-Pixbuf are *not*
+required despite older guides naming them: WeasyPrint has written PDFs itself
+since v53 and reads images through Pillow. See the
 [WeasyPrint install guide](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation)
-for other platforms. Skip the extra if you only need markdown / HTML.
+for other platforms. Skip the extra if you only need markdown / HTML — or use the
+[Docker image](#docker), which has all of this already.
 
 > **Apple Silicon note:** Homebrew installs libraries to `/opt/homebrew/lib`,
 > which Python's loader doesn't search by default. If WeasyPrint can't find
@@ -129,11 +134,12 @@ docker run --rm \
 > and `OBSL_BASE_URL=http://host.docker.internal:8080` so the container can
 > reach it.
 
-The image covers markdown / HTML reports and all data exports — pyarrow ships
-in it, so Parquet / Arrow and `s3://` destinations work out of the box (mount a
-volume for local export folders, or point at a bucket and pass AWS credentials
-as env vars). PDF output (WeasyPrint + Pango / Cairo system libs) is not
-bundled — run `--extra pdf` on a host install for that.
+The image covers every output the runner produces — no extra is missing from it.
+pyarrow ships in it, so Parquet / Arrow and `s3://` destinations work out of the
+box (mount a volume for local export folders, or point at a bucket and pass AWS
+credentials as env vars), and WeasyPrint ships with the Pango system libraries
+and a DejaVu font, so `format: pdf` renders without any host setup — the part
+that is fiddly to install locally is already done here.
 
 ```bash
 docker run --rm \
@@ -319,7 +325,7 @@ report:
 
 `pdf_page_size` and `pdf_orientation` are ignored for `markdown` / `html` output. Reach for **A3** or **landscape** when a table has many columns or wide cell values that wrap awkwardly in A4 portrait — the same content, just more horizontal room.
 
-PDF requires the optional `pdf` extra (`uv sync --extra pdf`) and WeasyPrint's [system libraries](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation) — see [Install](#install). See [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) for a rendered PDF sample.
+PDF requires the optional `pdf` extra (`uv tool install "orionbelt-runner[pdf]"`) and WeasyPrint's [system libraries](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation) — see [Install](#install). Both are already present in the [Docker image](#docker), which is the least painful way to get PDF output. See [`examples/monthly-revenue-2026-04-29.pdf`](examples/monthly-revenue-2026-04-29.pdf) for a rendered PDF sample.
 
 ### Run log (YAML sidecar) — always written
 
@@ -482,7 +488,8 @@ That last column matters, because the artifacts differ. The wheel contains only
 `orionbelt_runner`; the sdist adds this repository's own sources. Neither carries
 any third-party code — pip fetches it from PyPI — so for both the file is
 informational. The **image** genuinely redistributes what the Dockerfile installs
-(`--extra arrow` today, so no WeasyPrint or pyphen), and carries the same texts at
+— today both extras, so the whole closure, WeasyPrint and pyphen included — and
+carries the same texts at
 `/app/.venv/lib/python*/site-packages/*.dist-info/licenses/` alongside
 `/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.
 
@@ -494,9 +501,9 @@ retrievable from <https://snapshot.debian.org> because the base is pinned at bui
 time. No GPL code is linked into or imported by the runner.
 
 Everything in the closure is permissive (MIT / BSD / Apache-2.0 / ISC / PSF) with
-two documented exceptions, `certifi` (MPL-2.0) and `pyphen` (tri-licensed, `pdf`
-extra only, and not redistributed by us — so no license election is needed) —
-both explained in that file. An
+two documented exceptions, `certifi` (MPL-2.0) and `pyphen` (tri-licensed; the
+image ships it, so RALFORION elects **LGPL-2.1-or-later** and never the GPL
+option) — both explained in that file. An
 acknowledgement is bound to the license expression that was reviewed, not to the
 package name, so a dependency that relicenses comes back through the gate.
 
