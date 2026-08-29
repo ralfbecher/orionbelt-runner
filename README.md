@@ -37,10 +37,29 @@ Early scaffold (v0.9.0). Markdown, HTML, and PDF reports, per-query data exports
 
 ## Install
 
+From PyPI — the runner is a CLI, so installing it as a tool keeps it out of your
+project's environment:
+
+```bash
+uv tool install orionbelt-runner              # core: markdown + HTML reports, TSV exports
+uv tool install "orionbelt-runner[arrow]"     # + Parquet / Arrow exports and S3 destinations
+uv tool install "orionbelt-runner[pdf]"       # + PDF output (requires Pango / Cairo)
+```
+
+`pip install orionbelt-runner` works the same way if you'd rather manage the
+environment yourself. Either way you get the `orionbelt-runner` command:
+
+```bash
+orionbelt-runner run spec.yaml
+```
+
+From a checkout, for development or to run an unreleased revision:
+
 ```bash
 uv sync                  # core: markdown + HTML reports, TSV exports
 uv sync --extra pdf      # also enable PDF output (requires Pango / Cairo)
 uv sync --extra arrow    # also enable Parquet / Arrow exports and S3 destinations
+uv run orionbelt-runner run spec.yaml
 ```
 
 PDF output needs WeasyPrint, which depends on system libraries (Pango,
