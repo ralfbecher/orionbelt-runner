@@ -110,6 +110,15 @@ resolved the way the Dockerfile resolves it (3.14, `--no-dev --extra arrow
 describing a dev environment would not describe the image anyone runs. Keep that
 step in step with the Dockerfile's `uv sync` line.
 
+The SBOM generator itself is pinned, `cyclonedx-bom==7.3.1` plus
+`--exclude-newer`, for the same reason the Actions are: unpinned, the tool
+describing what we shipped could change behaviour or break a release with no
+commit behind it, and the version alone would leave cyclonedx-python-lib
+floating. Both versions land in the SBOM's own `metadata.tools`, so a float
+shows up as an unexplained diff between two releases of the same code. Nothing
+bumps this automatically, since Dependabot reads manifests rather than `uvx
+--from` inside a `run:` block, so move both values deliberately.
+
 PyPI uses Trusted Publishing, so there is no token: the `pypi` GitHub
 environment is what the identity binds to, and renaming it breaks the upload
 until the publisher on PyPI is renamed to match. A manual run publishes the
