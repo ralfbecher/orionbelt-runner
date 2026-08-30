@@ -18,6 +18,7 @@ uv run pytest                                           # tests
 uv run ruff check src/ tests/                           # lint
 uv run ruff format src/ tests/                          # format
 uv run mypy src/                                        # type check
+./scripts/check-action-pins.sh                          # after editing a workflow
 ```
 
 ## Architecture
@@ -126,11 +127,81 @@ current ref, which is how a version tagged before the workflow existed gets
 uploaded — dispatch against `main` in that case, since the workflow file does not
 exist at the older tag.
 
-The publish job verifies the tag against both version strings first. That check
-exists because the drift has happened: 0.9.0 sat in `pyproject.toml` through
+`pypi-publish.yml` is two jobs. `build` checks out the tree, verifies the tag
+against both version strings, builds the sdist and wheel and runs `twine check`,
+all with no `id-token`; `publish` downloads that artifact and uploads it, and is
+the only job holding the identity PyPI accepts. The split is the security
+boundary rather than a staging convenience: `uv build` invokes the build backend,
+which resolves and executes whatever `pyproject.toml` names, and none of that
+should be able to mint a token good for uploading this project. PyPI matches its
+publisher on the workflow file and the environment, not the job, so `pypi` sits
+on `publish` and the binding above is unaffected.
+
+The version gate runs first, in `build`. That check exists because the drift has
+happened: 0.9.0 sat in `pyproject.toml` through
 several commits with no tag behind it, so v0.8.1 stayed the newest release while
 two user-facing changes went unshipped. A tag that disagrees with what it
 packages is worse than a missing one.
+
+## Workflow Actions
+
+Every Action the three workflows use is pinned to a commit SHA rather than a
+version tag, because a tag is a movable label its owner can repoint at new code
+at any time. A SHA is unreadable, though, so the `# vX.Y.Z` comment beside it is
+the only part a reviewer actually reads, and nothing makes the two agree.
+
+That gap is what `scripts/check-action-pins.sh` closes. It resolves each
+comment's tag upstream with `git ls-remote` and fails when the SHA pinned in the
+workflow is not the commit that tag names, so a hash quietly swapped for one
+taken from a fork stops looking like a routine Dependabot bump — forks share
+object storage with their parent, so such a commit is reachable under the real
+repository's URL too, and only resolving the tag tells the two apart. It also
+rejects any Action that is not SHA-pinned, any owner outside `ALLOWED_OWNERS`,
+and any container action not pinned by digest, since an image tag such as
+`:latest` moves just as a git tag does.
+
+`ALLOWED_OWNERS` carries the most weight of the three. A SHA matching its own tag
+says nothing about whether the Action belongs here, because a hostile
+repository's tags verify against themselves perfectly well. Adding an owner is a
+deliberate edit to the script, reviewed as such.
+
+Comments must name exact patch releases. A major tag such as `v7` moves with
+every upstream release, so checking against it would turn CI red the moment
+`v7.0.2` ships for a pin that is still good, which is a dependency on exactly the
+mutable pointer that pinning was meant to escape. To bump an Action, resolve the
+release and paste both halves:
+
+```bash
+git ls-remote https://github.com/actions/checkout 'refs/tags/v7.0.1^{}'
+```
+
+In CI the check is a job of its own, `pins`, and every other job `needs:` it.
+Running it beside them would be too late: a parallel job has already executed
+its own `uses:` before `pins` can fail, so for a forged pin the attacker's code
+runs anyway and the check is only blocking the merge, not the run. The same
+reasoning puts it first after checkout in both publishing workflows, since those
+hold the Docker Hub credentials and the PyPI identity, and an Action that has
+already run could have rewritten the workspace, this script included.
+`pypi-publish.yml`'s `publish` job needs no copy: it cannot start until `build`
+has passed. `--offline` skips the upstream lookups and checks only SHA and
+comment format.
+
+**`pins` has to stay in `main`'s required status checks.** A job whose `needs:`
+failed is reported as skipped, and branch protection counts a skipped required
+check as satisfied. So if `pins` were dropped from the required list, a failing
+pin check would skip `check`, `test` and `image` straight into a green merge,
+which is worse than not gating them at all.
+
+Permissions are scoped the same way. Each workflow declares `contents: read` at
+the top, and the one job that needs more says so itself. Nothing here needs a
+writable `GITHUB_TOKEN`: Docker Hub is authenticated by `DOCKERHUB_TOKEN` and
+PyPI by OIDC.
+
+What this does **not** do, since a pin check is easy to over-trust: it does not
+judge whether an Action is safe, only that the hash matches its own label; it
+does not stop a downgrade to a real but ancient release; and `actions/checkout`
+runs before the check and is therefore unverified, which is an irreducible
+bootstrap dependency rather than an oversight.
 
 ## Third-party licenses
 
