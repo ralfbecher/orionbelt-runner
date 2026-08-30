@@ -147,13 +147,22 @@ release and paste both halves:
 git ls-remote https://github.com/actions/checkout 'refs/tags/v7.0.1^{}'
 ```
 
-The check runs as the first step of CI's `check` job — the one context branch
-protection requires — and as the first step after checkout in both publishing
-workflows, since those are the ones holding the Docker Hub credentials and the
-PyPI identity. `pypi-publish.yml`'s `publish` job needs no copy: it cannot start
-until `build` has passed, so its Actions are verified before they exist as
-running code. `--offline` skips the upstream lookups and checks only SHA and
+In CI the check is a job of its own, `pins`, and every other job `needs:` it.
+Running it beside them would be too late: a parallel job has already executed
+its own `uses:` before `pins` can fail, so for a forged pin the attacker's code
+runs anyway and the check is only blocking the merge, not the run. The same
+reasoning puts it first after checkout in both publishing workflows, since those
+hold the Docker Hub credentials and the PyPI identity, and an Action that has
+already run could have rewritten the workspace, this script included.
+`pypi-publish.yml`'s `publish` job needs no copy: it cannot start until `build`
+has passed. `--offline` skips the upstream lookups and checks only SHA and
 comment format.
+
+**`pins` has to stay in `main`'s required status checks.** A job whose `needs:`
+failed is reported as skipped, and branch protection counts a skipped required
+check as satisfied. So if `pins` were dropped from the required list, a failing
+pin check would skip `check`, `test` and `image` straight into a green merge,
+which is worse than not gating them at all.
 
 Permissions are scoped the same way. Each workflow declares `contents: read` at
 the top, and the one job that needs more says so itself. Nothing here needs a
