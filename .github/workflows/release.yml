@@ -1,0 +1,165 @@
+name: Release
+
+# Create a GitHub Release when a version tag is pushed, and attach the two
+# compliance artifacts to it. The Docker image and the PyPI upload are built by
+# their own tag-triggered workflows; this one owns the GitHub Release object,
+# which tagging alone does NOT create.
+#
+# It never rewrites a release that already exists. If one is there, only the
+# assets are refreshed, so a hand-written title and hand-written notes survive
+# a re-run. It composes notes itself only when there is no release at all.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that runs repository code and third-party tooling happens here,
+  # under a token that cannot write. The assets leave as an artifact.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # First, before any other action runs. Ordering is the point: an action
+      # that has already executed could have rewritten the workspace, this
+      # script included, so a verifier placed after it would be checking
+      # whatever that action left behind. Only checkout runs first, and it has
+      # to, since nothing can be verified before the tree it fetches exists.
+      # It covers publish's actions too, which is why that job needs no copy:
+      # publish cannot start until this job has passed.
+      - name: Verify every Action is pinned to its named release
+        run: ./scripts/check-action-pins.sh
+
+      # The same gate pypi-publish.yml applies, repeated rather than shared.
+      # These are independent workflows on the same trigger: a tag that
+      # disagrees with what it packages must not produce a Release either, and
+      # neither workflow should depend on the other having run.
+      - name: Check the tag matches the packaged version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          project=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          dunder=$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('src/orionbelt_runner/__init__.py').read()).group(1))")
+          echo "tag=$tag  pyproject=$project  __version__=$dunder"
+          rc=0
+          [ "$tag" = "$project" ] || { echo "::error file=pyproject.toml::tag v$tag does not match pyproject version $project"; rc=1; }
+          [ "$tag" = "$dunder" ] || { echo "::error file=src/orionbelt_runner/__init__.py::tag v$tag does not match __version__ $dunder"; rc=1; }
+          exit $rc
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+
+      # Two environments, because the two artifacts describe different things.
+      #
+      # The notice covers the *noticed* closure and is checked exactly as CI
+      # checks it, on the same interpreter with the same extra: `dev` pulls
+      # pyarrow and weasyprint, so it installs everything the notice must
+      # account for. Verifying rather than regenerating is deliberate. The file
+      # is committed, so the release ships the artifact the repository was
+      # reviewed with, and a tag pushed past a bypassed CI run fails here
+      # instead of publishing a stale notice.
+      - name: Set up Python for the notice check
+        run: uv python install 3.12
+
+      - name: Install the noticed closure
+        run: uv sync --locked --extra dev
+
+      - name: THIRD-PARTY-NOTICES.md is current
+        run: uv run --no-sync python scripts/third_party_notices.py --check
+
+      # The SBOM covers the *redistributed* set instead, so it is resolved the
+      # way the Dockerfile resolves it: 3.14, --no-dev, --extra arrow --extra
+      # pdf. The resolved set is interpreter-dependent, and an SBOM describing
+      # a 3.12 dev environment would not describe the image anyone runs.
+      # Keep this in step with the Dockerfile's `uv sync` line.
+      - name: Set up Python for the shipping environment
+        run: uv python install 3.14
+
+      - name: Resolve the shipping environment
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/image-venv
+        run: uv sync --frozen --no-dev --extra arrow --extra pdf --python 3.14
+
+      # CycloneDX rather than the image attestation, so the SBOM is fetchable
+      # without a registry client. --output-reproducible keeps it diffable
+      # between releases.
+      #
+      # The generator is pinned for the same reason the Actions are. Unpinned,
+      # every tag would resolve whatever CycloneDX was current that minute, so
+      # the tool describing what we shipped could change behaviour, or break the
+      # release outright, with no commit behind it. The version alone is not
+      # enough: cyclonedx-python-lib is what actually composes the document and
+      # would still float, and both versions are recorded in the SBOM's
+      # metadata.tools, so a float shows up as an unexplained diff between two
+      # releases of the same code. --exclude-newer pins the whole resolution.
+      #
+      # Nothing bumps this automatically -- Dependabot reads manifests, not
+      # `uvx --from` inside a run block -- so treat it like an Action pin and
+      # move both values deliberately.
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          uvx --from 'cyclonedx-bom==7.3.1' \
+            --exclude-newer 2026-08-30T00:00:00Z \
+            cyclonedx-py environment \
+            --of JSON \
+            --sv 1.6 \
+            --output-reproducible \
+            --pyproject pyproject.toml \
+            -o sbom.cdx.json \
+            "$RUNNER_TEMP/image-venv/bin/python"
+
+      - name: Upload the release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            THIRD-PARTY-NOTICES.md
+            sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The only job that can write to the repository, and the only one that needs
+  # to. It runs no repository code and checks out nothing: the files it uploads
+  # were produced by `build` under a read-only token, and `gh` reaches the
+  # repository through GH_REPO rather than a clone. --generate-notes is
+  # server-side, so no history is needed here either.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Collect the release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+
+      # Non-destructive on purpose. Releases here carry hand-written titles and
+      # hand-written notes, and a workflow that regenerated them on every re-run
+      # would quietly throw that away. An existing release gets its assets
+      # refreshed and nothing else.
+      - name: Create the Release, or refresh its assets
+        run: |
+          assets="THIRD-PARTY-NOTICES.md sbom.cdx.json"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists. Refreshing its assets, leaving title and notes alone."
+            # shellcheck disable=SC2086
+            gh release upload "$GITHUB_REF_NAME" $assets --clobber
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            --latest \
+            $assets

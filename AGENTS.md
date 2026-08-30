@@ -88,9 +88,37 @@ Note: `GET /v1/settings` also exposes `version` (release) plus `api_version` (th
 
 A release is a tag. `pyproject.toml`, `src/orionbelt_runner/__init__.py` and
 `uv.lock` carry the version; bump all three, merge, then tag `vX.Y.Z` on `main`.
-Pushing that tag fans out to two workflows: `docker-publish.yml` builds and pushes
-`:X.Y.Z`, `:X.Y`, `:X` and `:latest`, and `pypi-publish.yml` uploads the sdist and
-wheel. Both are tag-gated and never fire on a branch push.
+Pushing that tag fans out to three workflows: `docker-publish.yml` builds and
+pushes `:X.Y.Z`, `:X.Y`, `:X` and `:latest`, `pypi-publish.yml` uploads the sdist
+and wheel, and `release.yml` creates the GitHub Release and attaches
+`THIRD-PARTY-NOTICES.md` and a CycloneDX SBOM to it. All three are tag-gated and
+never fire on a branch push, and none depends on another having run.
+
+`release.yml` is deliberately non-destructive. Releases here carry hand-written
+titles and hand-written notes, so it rewrites neither: if a release for the tag
+already exists it refreshes the two assets and touches nothing else, and it
+composes notes itself only when there is no release at all. Create the release by
+hand whenever you like, before or after the tag, and the assets still land on it.
+To backfill a release cut before this workflow existed, download the two assets
+from a later run and `gh release upload` them, since the workflow file does not
+exist at the older tag.
+
+It verifies rather than regenerates `THIRD-PARTY-NOTICES.md`, exactly as CI does,
+so the release ships the file the repository was reviewed with and a tag pushed
+past a bypassed CI run fails instead of publishing a stale notice. The SBOM is
+resolved the way the Dockerfile resolves it (3.14, `--no-dev --extra arrow
+--extra pdf`), because the resolved set is interpreter-dependent and an SBOM
+describing a dev environment would not describe the image anyone runs. Keep that
+step in step with the Dockerfile's `uv sync` line.
+
+The SBOM generator itself is pinned, `cyclonedx-bom==7.3.1` plus
+`--exclude-newer`, for the same reason the Actions are: unpinned, the tool
+describing what we shipped could change behaviour or break a release with no
+commit behind it, and the version alone would leave cyclonedx-python-lib
+floating. Both versions land in the SBOM's own `metadata.tools`, so a float
+shows up as an unexplained diff between two releases of the same code. Nothing
+bumps this automatically, since Dependabot reads manifests rather than `uvx
+--from` inside a `run:` block, so move both values deliberately.
 
 PyPI uses Trusted Publishing, so there is no token: the `pypi` GitHub
 environment is what the identity binds to, and renaming it breaks the upload
