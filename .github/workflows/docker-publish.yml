@@ -80,7 +80,7 @@ jobs:
           # The image redistributes a large closure (pyarrow and weasyprint pull
           # most of it), and the SBOM is what lets a consumer enumerate that
           # without unpacking the layers -- from 2027 the CRA expects exactly
-          # this. THIRD-PARTY-NOTICES.md answers the licence question and rides
+          # this. THIRD_PARTY_NOTICES.md answers the licence question and rides
           # along inside the image at /app; the SBOM answers "what is in here",
           # which the notice file deliberately does not.
           #

@@ -479,7 +479,7 @@ For commercial licensing inquiries, contact: licensing@ralforion.com
 
 ### Third-party dependencies
 
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists every third-party package
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists every third-party package
 the runner can pull in — the runtime closure plus the `arrow` and `pdf` extras —
 with its license, its full license text, and whether the Docker image actually
 redistributes it.
@@ -491,7 +491,7 @@ informational. The **image** genuinely redistributes what the Dockerfile install
 — today both extras, so the whole closure, WeasyPrint and pyphen included — and
 carries the same texts at
 `/app/.venv/lib/python*/site-packages/*.dist-info/licenses/` alongside
-`/app/LICENSE` and `/app/THIRD-PARTY-NOTICES.md`.
+`/app/LICENSE` and `/app/THIRD_PARTY_NOTICES.md`.
 
 The interpreter and the Debian base the image is built on sit below what
 `uv.lock` can see, so they are covered by a **Platform layer** section in the same

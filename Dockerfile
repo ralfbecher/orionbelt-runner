@@ -72,7 +72,7 @@ COPY --from=build --chown=runner:runner /app/.venv /app/.venv
 # travel with it. Each wheel's own license text already ships inside
 # .venv/**/dist-info/licenses/; these two put the runner's license and the
 # consolidated notices somewhere a person (or an audit) can actually find them.
-COPY --chown=runner:runner LICENSE THIRD-PARTY-NOTICES.md /app/
+COPY --chown=runner:runner LICENSE THIRD_PARTY_NOTICES.md /app/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
