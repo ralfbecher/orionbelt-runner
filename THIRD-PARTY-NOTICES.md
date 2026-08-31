@@ -51,40 +51,40 @@ uv run --no-sync python scripts/third_party_notices.py
 
 | Package | Version | License | In image |
 | --- | --- | --- | --- |
-| annotated-doc | 0.0.4 | MIT | yes |
-| annotated-types | 0.7.0 | MIT License | yes |
+| annotated-doc | 0.0.5 | MIT | yes |
+| annotated-types | 0.8.0 | MIT | yes |
 | anyio | 4.14.2 | MIT | yes |
 | brotli | 1.2.0 | MIT | yes |
-| certifi | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) ⚠️ | yes |
-| cffi | 2.1.0 | MIT-0 | yes |
+| certifi | 2026.7.22 | Mozilla Public License 2.0 (MPL 2.0) ⚠️ | yes |
+| cffi | 2.1.1 | MIT-0 | yes |
 | cssselect2 | 0.9.0 | BSD License | yes |
 | fonttools | 4.63.0 | MIT | yes |
 | h11 | 0.16.0 | MIT License | yes |
 | httpcore | 1.0.9 | BSD-3-Clause | yes |
 | httpx | 0.28.1 | BSD License | yes |
-| idna | 3.18 | BSD-3-Clause | yes |
+| idna | 3.19 | BSD-3-Clause | yes |
 | markdown | 3.10.3 | BSD-3-Clause | yes |
 | markdown-it-py | 4.2.0 | MIT License | yes |
 | mdurl | 0.1.2 | MIT License | yes |
 | pillow | 12.3.0 | MIT-CMU | yes |
 | pyarrow | 25.0.1 | Apache-2.0 | yes |
 | pycparser | 3.0 | BSD-3-Clause | yes |
-| pydantic | 2.13.4 | MIT | yes |
-| pydantic-core | 2.46.4 | MIT | yes |
+| pydantic | 2.13.5 | MIT | yes |
+| pydantic-core | 2.46.5 | MIT | yes |
 | pydyf | 0.12.1 | BSD License | yes |
-| pygments | 2.20.0 | BSD-2-Clause | yes |
-| pyphen | 0.17.2 | GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1) ⚠️ | yes |
+| pygments | 2.21.0 | BSD-2-Clause | yes |
+| pyphen | 0.18.1 | GNU General Public License v2 or later (GPLv2+) OR GNU Lesser General Public License v2 or later (LGPLv2+) OR Mozilla Public License 1.1 (MPL 1.1) ⚠️ | yes |
 | rich | 15.0.0 | MIT License | yes |
 | ruamel-yaml | 0.19.1 | MIT License | yes |
 | shellingham | 1.5.4 | ISC License (ISCL) | yes |
 | structlog | 26.1.0 | MIT OR Apache-2.0 | yes |
 | tinycss2 | 1.5.1 | BSD License | yes |
 | tinyhtml5 | 2.1.0 | MIT License | yes |
-| typer | 0.27.1 | MIT | yes |
+| typer | 0.27.2 | MIT | yes |
 | typing-extensions | 4.16.0 | PSF-2.0 | yes |
-| typing-inspection | 0.4.2 | MIT | yes |
+| typing-inspection | 0.4.4 | MIT | yes |
 | weasyprint | 69.0 | BSD License | yes |
-| webencodings | 0.5.1 | BSD-3-Clause | yes |
+| webencodings | 0.6.1 | BSD-3-Clause | yes |
 | zopfli | 0.4.3 | Apache Software License | yes |
 
 ## Conditions worth knowing (⚠️ above)
@@ -142,7 +142,7 @@ docker run --rm <image> dpkg-query -W -f='${source:Package} ${source:Version}\n'
 
 ## Full license texts
 
-### annotated-doc 0.0.4
+### annotated-doc 0.0.5
 
 *LICENSE*
 
@@ -170,7 +170,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### annotated-types 0.7.0
+### annotated-types 0.8.0
 
 *LICENSE*
 
@@ -251,7 +251,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### certifi 2026.6.17
+### certifi 2026.7.22
 
 *LICENSE*
 
@@ -278,7 +278,7 @@ one at http://mozilla.org/MPL/2.0/.
 @(#) $RCSfile: certdata.txt,v $ $Revision: 1.80 $ $Date: 2011/11/03 15:11:58 $
 ```
 
-### cffi 2.1.0
+### cffi 2.1.1
 
 *LICENSE*
 
@@ -845,7 +845,7 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### idna 3.18
+### idna 3.19
 
 *LICENSE.md*
 
@@ -5042,7 +5042,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### pydantic 2.13.4
+### pydantic 2.13.5
 
 *LICENSE*
 
@@ -5070,7 +5070,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### pydantic-core 2.46.4
+### pydantic-core 2.46.5
 
 *LICENSE*
 
@@ -5134,7 +5134,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### pygments 2.20.0
+### pygments 2.21.0
 
 *AUTHORS*
 
@@ -5195,6 +5195,7 @@ Other contributors, listed alphabetically, are:
 * Leaf Corcoran -- MoonScript lexer
 * Fraser Cormack -- TableGen lexer
 * Gabriel Corona -- ASN.1 lexer
+* Radu Costache -- Boogie and Civl Verifier lexer improvements
 * Christopher Creutzig -- MuPAD lexer
 * Daniël W. Crompton -- Pike lexer
 * Pete Curry -- bugfixes
@@ -5235,6 +5236,7 @@ Other contributors, listed alphabetically, are:
 * Patrick Gotthardt -- PHP namespaces support
 * Hubert Gruniaux -- C and C++ lexer improvements
 * Olivier Guibe -- Asymptote lexer
+* Armin Günther -- Go lexer improvements
 * Phil Hagelberg -- Fennel lexer
 * Florian Hahn -- Boogie lexer
 * Martin Harriman -- SNOBOL lexer
@@ -5307,6 +5309,7 @@ Other contributors, listed alphabetically, are:
 * Kurt McKee -- Tera Term macro lexer, PostgreSQL updates, MySQL overhaul, JSON lexer
 * Joe Eli McIlvain -- Savi lexer
 * Lukas Meuser -- BBCode formatter, Lua lexer
+* Bruno Mesquita -- Night Owl style
 * Cat Miller -- Pig lexer
 * Paul Miller -- LiveScript lexer
 * Hong Minhee -- HTTP lexer
@@ -5405,6 +5408,7 @@ Other contributors, listed alphabetically, are:
 * Nathan Whetsell -- Csound lexers
 * Dietmar Winkler -- Modelica lexer
 * Nils Winter -- Smalltalk lexer
+* Trevor Woerner -- BitBake lexer
 * Davy Wybiral -- Clojure lexer
 * Whitney Young -- ObjectiveC lexer
 * Diego Zamboni -- CFengine3 lexer
@@ -5463,7 +5467,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### pyphen 0.17.2
+### pyphen 0.18.1
 
 *COPYING.GPL*
 
@@ -7167,7 +7171,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### typer 0.27.1
+### typer 0.27.2
 
 *LICENSE*
 
@@ -7481,7 +7485,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### typing-inspection 0.4.2
+### typing-inspection 0.4.4
 
 *LICENSE*
 
@@ -7545,7 +7549,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### webencodings 0.5.1
+### webencodings 0.6.1
 
 *webencodings.txt (vendored)*
 
