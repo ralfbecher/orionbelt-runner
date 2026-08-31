@@ -366,3 +366,45 @@ def test_a_pending_licence_fails_and_is_reported_as_pending() -> None:
     kind, message = failures[0]
     assert kind == "pending"
     assert "not decided yet" in message
+
+
+def test_the_notice_names_the_licence_pyproject_declares() -> None:
+    """The notice's own first claim must match the packaging metadata.
+
+    This is guarding a bug that shipped: the licence name was written into the
+    renderer, so the first time the script was vendored into an Apache-2.0
+    project its notice opened by declaring the Business Source License. A licence
+    document asserting the wrong licence is the worst output this script has, so
+    the claim is derived and the derivation is pinned here.
+    """
+    identifier, display = notices.project_license()
+    declared = tomllib.loads((notices.ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["license"]
+    assert identifier == (declared["text"] if isinstance(declared, dict) else declared)
+    # Whitespace-collapsed: the paragraph is wrapped to 78 columns, so the name
+    # can straddle a line break. Markdown renders that as one phrase, and a
+    # substring match on the raw file would fail for purely cosmetic reasons.
+    rendered = " ".join(notices.NOTICES_PATH.read_text(encoding="utf-8").split())
+    assert display in rendered
+
+
+@pytest.mark.parametrize("identifier", ["BSL-1.1", "BSL-1.0", "Business Source License"])
+def test_a_licence_that_is_not_ours_is_refused(identifier: str, monkeypatch) -> None:
+    """BSL-1.1 is not an SPDX identifier and BSL-1.0 is Boost, a permissive licence.
+
+    Naming either in place of BUSL-1.1 would describe close to the opposite of
+    what this project is under, so an unrecognised value stops the build instead
+    of being rendered.
+    """
+    monkeypatch.setattr(
+        notices,
+        "LICENSE_DISPLAY_NAMES",
+        {k: v for k, v in notices.LICENSE_DISPLAY_NAMES.items() if k != identifier},
+    )
+    original = (notices.ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    patched = original.replace('license = "BUSL-1.1"', f'license = "{identifier}"', 1)
+    assert patched != original, "the fixture no longer matches pyproject's shape"
+    monkeypatch.setattr(Path, "read_text", lambda self, **kw: patched)
+    with pytest.raises(SystemExit, match="SPDX"):
+        notices.project_license()
