@@ -88,8 +88,13 @@ def test_policy_passes_permissive_dependencies() -> None:
 def test_policy_fails_a_new_copyleft_dependency() -> None:
     failures = notices.enforce_policy([_package("some-new-dep", "GPL-3.0-only")])
     assert len(failures) == 1
-    assert "some-new-dep" in failures[0]
-    assert "ACKNOWLEDGED" in failures[0]
+    kind, message = failures[0]
+    # The kind matters as much as the message: only "pending" failures may be
+    # written past with --allow-pending, so a never-reviewed dependency must not
+    # be reported as one.
+    assert kind == "unreviewed"
+    assert "some-new-dep" in message
+    assert "ACKNOWLEDGED" in message
 
 
 def test_policy_fails_an_undeclared_licence() -> None:
@@ -147,11 +152,11 @@ def test_platform_notice_tracks_the_dockerfile() -> None:
     assert image.startswith("python:")
     assert image.endswith("-slim")
     assert python_version in image
-    assert f"FROM {image} AS runtime" in notices.DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert f"FROM {image}" in notices.DOCKERFILE_PATH.read_text(encoding="utf-8")
 
-    rendered = notices.PLATFORM_SECTION.replace("{{IMAGE}}", image).replace(
-        "{{PYVER}}", python_version
-    )
+    # Through the script's own substitution, not a copy of it: a second copy here
+    # passes against itself while a newly added placeholder ships unreplaced.
+    rendered = notices.render_platform_section()
     assert f"FROM {image}" in rendered
     assert f"/usr/local/lib/python{python_version}/LICENSE.txt" in rendered
     assert "{{" not in rendered, "an unreplaced placeholder is left in the notice"
@@ -179,7 +184,7 @@ def test_shipping_the_pdf_extra_forces_the_election() -> None:
     """The moment an artifact bundles pyphen, the choice has to be recorded."""
     failures = notices.enforce_pyphen_election(ships_pdf=True, election=None)
     assert len(failures) == 1
-    assert "PYPHEN_ELECTION" in failures[0]
+    assert "PYPHEN_ELECTION" in failures[0][1]
 
 
 @pytest.mark.parametrize(
@@ -206,13 +211,16 @@ def test_the_election_and_the_dockerfile_move_together(
 
 def test_acknowledgement_is_bound_to_the_licence_that_was_reviewed() -> None:
     """Relicensing must re-enter the gate, not inherit approval granted to old terms."""
-    approved = notices.ACKNOWLEDGED["certifi"].license_expression
-    assert notices.enforce_policy([_package("certifi", approved)]) == []
+    entry = notices.ACKNOWLEDGED["certifi"]
+    assert isinstance(entry, notices.Acknowledgement)
+    assert notices.enforce_policy([_package("certifi", entry.license_expression)]) == []
 
     failures = notices.enforce_policy([_package("certifi", "GPL-3.0-only")])
     assert len(failures) == 1
-    assert "acknowledged under" in failures[0]
-    assert "GPL-3.0-only" in failures[0]
+    kind, message = failures[0]
+    assert kind == "mismatch"
+    assert "acknowledged under" in message
+    assert "GPL-3.0-only" in message
 
 
 def test_every_acknowledgement_matches_what_the_closure_declares() -> None:
@@ -334,3 +342,27 @@ def test_an_unreadable_installer_is_refused_not_ignored(
     """Switching install tooling must stop the build, not empty out the notice."""
     with pytest.raises(SystemExit, match="cannot read extras from"):
         _extras_for("RUN pip install '.[pdf]'\n", tmp_path, monkeypatch)
+
+
+def test_a_pending_licence_fails_and_is_reported_as_pending() -> None:
+    """Pending is a record that a question is open, never a way to silence the gate.
+
+    The kind is asserted alongside the failure because --allow-pending keys on it:
+    if a Pending entry were reported as "unreviewed" the bootstrap path would refuse
+    to write, and if an unreviewed package were reported as "pending" it could be
+    written past. Both directions are wrong, so both are pinned here.
+    """
+    packages = [_package("something", "GPL-3.0-only")]
+    original = notices.ACKNOWLEDGED.get("something")
+    notices.ACKNOWLEDGED["something"] = notices.Pending("not decided yet")
+    try:
+        failures = notices.enforce_policy(packages)
+    finally:
+        if original is None:
+            del notices.ACKNOWLEDGED["something"]
+        else:
+            notices.ACKNOWLEDGED["something"] = original
+    assert len(failures) == 1
+    kind, message = failures[0]
+    assert kind == "pending"
+    assert "not decided yet" in message

@@ -70,7 +70,7 @@ jobs:
       - name: Install the noticed closure
         run: uv sync --locked --extra dev
 
-      - name: THIRD-PARTY-NOTICES.md is current
+      - name: THIRD_PARTY_NOTICES.md is current
         run: uv run --no-sync python scripts/third_party_notices.py --check
 
       # The SBOM covers the *redistributed* set instead, so it is resolved the
@@ -119,7 +119,7 @@ jobs:
         with:
           name: release-assets
           path: |
-            THIRD-PARTY-NOTICES.md
+            THIRD_PARTY_NOTICES.md
             sbom.cdx.json
           if-no-files-found: error
           retention-days: 1
@@ -149,7 +149,7 @@ jobs:
       # refreshed and nothing else.
       - name: Create the Release, or refresh its assets
         run: |
-          assets="THIRD-PARTY-NOTICES.md sbom.cdx.json"
+          assets="THIRD_PARTY_NOTICES.md sbom.cdx.json"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "Release $GITHUB_REF_NAME exists. Refreshing its assets, leaving title and notes alone."
             # shellcheck disable=SC2086

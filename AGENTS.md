@@ -36,7 +36,7 @@ src/orionbelt_runner/
 └── cli.py         # Typer CLI: orionbelt-runner run / version
 
 scripts/
-└── third_party_notices.py   # regenerates / verifies THIRD-PARTY-NOTICES.md
+└── third_party_notices.py   # regenerates / verifies THIRD_PARTY_NOTICES.md
 ```
 
 ## Testing
@@ -91,7 +91,7 @@ A release is a tag. `pyproject.toml`, `src/orionbelt_runner/__init__.py` and
 Pushing that tag fans out to three workflows: `docker-publish.yml` builds and
 pushes `:X.Y.Z`, `:X.Y`, `:X` and `:latest`, `pypi-publish.yml` uploads the sdist
 and wheel, and `release.yml` creates the GitHub Release and attaches
-`THIRD-PARTY-NOTICES.md` and a CycloneDX SBOM to it. All three are tag-gated and
+`THIRD_PARTY_NOTICES.md` and a CycloneDX SBOM to it. All three are tag-gated and
 never fire on a branch push, and none depends on another having run.
 
 `release.yml` is deliberately non-destructive. Releases here carry hand-written
@@ -103,7 +103,7 @@ To backfill a release cut before this workflow existed, download the two assets
 from a later run and `gh release upload` them, since the workflow file does not
 exist at the older tag.
 
-It verifies rather than regenerates `THIRD-PARTY-NOTICES.md`, exactly as CI does,
+It verifies rather than regenerates `THIRD_PARTY_NOTICES.md`, exactly as CI does,
 so the release ships the file the repository was reviewed with and a tag pushed
 past a bypassed CI run fails instead of publishing a stale notice. The SBOM is
 resolved the way the Dockerfile resolves it (3.14, `--no-dev --extra arrow
@@ -205,7 +205,7 @@ bootstrap dependency rather than an oversight.
 
 ## Third-party licenses
 
-`THIRD-PARTY-NOTICES.md` is **generated** — edit `scripts/third_party_notices.py`,
+`THIRD_PARTY_NOTICES.md` is **generated** — edit `scripts/third_party_notices.py`,
 never the file. It derives the closure from `uv.lock` (runtime + `arrow` + `pdf`;
 `dev` is tooling the project runs, not a work it ships) and pulls each license text
 from the wheel's own `*.dist-info/licenses/`, so the notice matches what is
@@ -252,6 +252,41 @@ A wheel that ships no license file gets a hand-vendored one in
 `scripts/license-overrides/`, with its provenance recorded in the file. Anything
 so vendored is called out in the notice as the only copy of those terms inside the
 image, since the package's own `dist-info` carries none.
+
+Apache-2.0 is the one license whose text repeats verbatim between packages — its
+terms name no copyright holder — so `shared_apache_terms()` hoists that block into
+**Appendix A** and the packages under it reference it instead of carrying ~10 KB
+apiece. The split is on content, never on the declared license or the file name:
+`apache_terms()` keeps a text only if it *opens* with the Apache-2.0 terms, because
+pillow and fonttools bundle Apache-2.0 inside a larger collection and pyphen's GPL
+and LGPL both end with the same `END OF TERMS AND CONDITIONS` sentence — a looser
+rule would hoist a block that is not those terms, or truncate a file that had more
+to say. Whatever follows the terms in a given file (the APPENDIX example with the
+holder filled in, pyarrow's ~100 KB of bundled notices) is still reproduced under
+that package's own heading, so no text is dropped, only de-duplicated. A single
+occurrence stays inline, and two byte-*different* Apache texts that each repeat is
+a hard error rather than something to resolve: it would mean a dependency ships
+altered terms, and folding those under one appendix heading would hide exactly the
+fact worth seeing.
+
+### What an acknowledgement has to say
+
+`ACKNOWLEDGED` entries are prose because the useful ones are an argument, not a
+label. The model to copy is the psycopg2 entry in `orionbelt-analytics`'s
+`THIRD_PARTY_NOTICES.md`, which names the specific clause it relies on (LGPL §5,
+"works that use the library"), says why the obligation stops at the dependency and
+does not reach BUSL-licensed code, states where complete corresponding source can
+be obtained, records that the copy shipped is unmodified upstream and may be
+replaced in place, and closes the obvious escape route by noting that psycopg 3
+carries the same terms. An entry that only says "LGPL, dynamically linked, fine"
+records a conclusion nobody can check.
+
+`Pending` is the same field with the argument missing. It fails the gate exactly
+as an unrecorded licence does; the difference is only that the error says somebody
+has already looked. `--allow-pending` writes the notice anyway, with those packages
+listed under a **⚠️ Unresolved licence questions** heading in the file itself, and
+still exits non-zero — for standing this script up in a repository whose backlog is
+the thing being surfaced, never for a release.
 
 The notice answers the licence question, not the inventory one. For that the
 pushed image carries an SBOM and max-detail build provenance as attestations
